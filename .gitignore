@@ -1,0 +1,18 @@
+# Xcode
+build/
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+
+# Data (generated, contains personal messages)
+data/
+*.db
+
+# Python
+scripts/venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
