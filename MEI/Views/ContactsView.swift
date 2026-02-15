@@ -38,8 +38,7 @@ struct ContactsView: View {
                 } description: {
                     Text("Add contacts to your whitelist to get started.")
                 }
-                .frame(maxHeight: 200)
-                Spacer()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
                     ForEach(filteredContacts) { contact in
