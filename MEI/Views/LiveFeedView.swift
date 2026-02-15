@@ -28,6 +28,8 @@ struct LiveFeedView: View {
                 } description: {
                     Text("Messages will appear here as the agent processes them.")
                 }
+                .frame(maxHeight: 200)
+                Spacer()
             } else {
                 ScrollView {
                     LazyVStack(spacing: 12) {

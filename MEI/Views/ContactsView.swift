@@ -38,6 +38,8 @@ struct ContactsView: View {
                 } description: {
                     Text("Add contacts to your whitelist to get started.")
                 }
+                .frame(maxHeight: 200)
+                Spacer()
             } else {
                 List {
                     ForEach(filteredContacts) { contact in
@@ -143,33 +145,37 @@ struct ContactPickerSheet: View {
             CNContactThumbnailImageDataKey as CNKeyDescriptor,
         ]
 
-        var results: [PhoneContact] = []
-        let request = CNContactFetchRequest(keysToFetch: keysToFetch)
-        request.sortOrder = .givenName
+        let results = await Task.detached(priority: .userInitiated) {
+            var contacts: [PhoneContact] = []
+            let request = CNContactFetchRequest(keysToFetch: keysToFetch)
+            request.sortOrder = .givenName
 
-        do {
-            try store.enumerateContacts(with: request) { cnContact, _ in
-                let phones = cnContact.phoneNumbers.compactMap { labeled -> PhoneNumber? in
-                    let normalized = Self.normalizePhoneNumber(labeled.value.stringValue)
-                    guard !normalized.isEmpty, !existingIDs.contains(normalized) else { return nil }
-                    let label = CNLabeledValue<NSString>.localizedString(forLabel: labeled.label ?? "")
-                    return PhoneNumber(normalized: normalized, formatted: labeled.value.stringValue, label: label)
+            do {
+                try store.enumerateContacts(with: request) { cnContact, _ in
+                    let phones = cnContact.phoneNumbers.compactMap { labeled -> PhoneNumber? in
+                        let normalized = Self.normalizePhoneNumber(labeled.value.stringValue)
+                        guard !normalized.isEmpty, !existingIDs.contains(normalized) else { return nil }
+                        let label = CNLabeledValue<NSString>.localizedString(forLabel: labeled.label ?? "")
+                        return PhoneNumber(normalized: normalized, formatted: labeled.value.stringValue, label: label)
+                    }
+                    guard !phones.isEmpty else { return }
+
+                    let name = [cnContact.givenName, cnContact.familyName]
+                        .filter { !$0.isEmpty }
+                        .joined(separator: " ")
+
+                    contacts.append(PhoneContact(
+                        name: name.isEmpty ? "Unknown" : name,
+                        phoneNumbers: phones,
+                        thumbnailData: cnContact.thumbnailImageData
+                    ))
                 }
-                guard !phones.isEmpty else { return }
-
-                let name = [cnContact.givenName, cnContact.familyName]
-                    .filter { !$0.isEmpty }
-                    .joined(separator: " ")
-
-                results.append(PhoneContact(
-                    name: name.isEmpty ? "Unknown" : name,
-                    phoneNumbers: phones,
-                    thumbnailData: cnContact.thumbnailImageData
-                ))
+            } catch {
+                // Fetch failed — return empty results
             }
-        } catch {
-            // Fetch failed — show empty state
-        }
+
+            return contacts
+        }.value
 
         phoneContacts = results
         loading = false

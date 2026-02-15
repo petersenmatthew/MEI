@@ -68,8 +68,14 @@ final class AppState {
     var activeHoursStart: Int = 8   // 8 AM
     var activeHoursEnd: Int = 23    // 11 PM
 
-    var contacts: [ContactConfig] = []
+    var contacts: [ContactConfig] = [] {
+        didSet { saveContacts() }
+    }
     var recentExchanges: [AgentExchange] = []
+
+    init() {
+        loadContacts()
+    }
 
     // Stats
     var todayMessagesSent: Int = 0
@@ -96,5 +102,35 @@ final class AppState {
 
     func contactMode(for contactID: String) -> ContactMode {
         contacts.first(where: { $0.contactID == contactID })?.mode ?? .active
+    }
+
+    // MARK: - Contact Persistence
+
+    private static var contactsFileURL: URL {
+        let supportDir = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first!.appendingPathComponent("MEI")
+        try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+        return supportDir.appendingPathComponent("contacts.json")
+    }
+
+    func loadContacts() {
+        let url = Self.contactsFileURL
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            contacts = try JSONDecoder().decode([ContactConfig].self, from: data)
+        } catch {
+            print("[AppState] Failed to load contacts: \(error)")
+        }
+    }
+
+    private func saveContacts() {
+        do {
+            let data = try JSONEncoder().encode(contacts)
+            try data.write(to: Self.contactsFileURL, options: .atomic)
+        } catch {
+            print("[AppState] Failed to save contacts: \(error)")
+        }
     }
 }
