@@ -9,12 +9,13 @@ struct StyleProfile: Codable, Sendable {
     let style: StyleDetails?
     let emoji: EmojiDetails?
     let vocabulary: VocabularyDetails?
+    let sentiment: SentimentDetails?
     let behavior: BehaviorDetails?
     let topics: TopicDetails?
     let timePatterns: TimePatterns?
 
     enum CodingKeys: String, CodingKey {
-        case contact, phone, style, emoji, vocabulary, behavior, topics
+        case contact, phone, style, emoji, vocabulary, sentiment, behavior, topics
         case relationshipTier = "relationship_tier"
         case messageStats = "message_stats"
         case timePatterns = "time_patterns"
@@ -45,6 +46,7 @@ struct StyleProfile: Codable, Sendable {
         let usesEllipsis: Bool?
         let usesApostrophes: Bool?
         let abbreviationLevel: String?
+        let avgWordsPerSentence: Double?
 
         enum CodingKeys: String, CodingKey {
             case capitalization
@@ -55,6 +57,7 @@ struct StyleProfile: Codable, Sendable {
             case usesEllipsis = "uses_ellipsis"
             case usesApostrophes = "uses_apostrophes"
             case abbreviationLevel = "abbreviation_level"
+            case avgWordsPerSentence = "avg_words_per_sentence"
         }
     }
 
@@ -76,6 +79,7 @@ struct StyleProfile: Codable, Sendable {
         let greetingPatterns: [String]?
         let farewellPatterns: [String]?
         let fillerWords: [String]?
+        let vocabularyRichness: Double?
 
         enum CodingKeys: String, CodingKey {
             case slangLevel = "slang_level"
@@ -83,6 +87,21 @@ struct StyleProfile: Codable, Sendable {
             case greetingPatterns = "greeting_patterns"
             case farewellPatterns = "farewell_patterns"
             case fillerWords = "filler_words"
+            case vocabularyRichness = "vocabulary_richness"
+        }
+    }
+
+    struct SentimentDetails: Codable, Sendable {
+        let avgCompound: Double?
+        let toneLabel: String?
+        let positivityRatio: Double?
+        let negativityRatio: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case avgCompound = "avg_compound"
+            case toneLabel = "tone_label"
+            case positivityRatio = "positivity_ratio"
+            case negativityRatio = "negativity_ratio"
         }
     }
 
@@ -150,6 +169,10 @@ struct StyleProfile: Codable, Sendable {
             if let e = s.usesExclamation { lines.append("Exclamation marks: \(e)") }
             if let q = s.usesQuestionMarks { lines.append("Question marks: \(q ? "yes" : "no")") }
             if let a = s.abbreviationLevel { lines.append("Abbreviation level: \(a)") }
+            if let wps = s.avgWordsPerSentence {
+                let complexity = wps < 4 ? "very short/fragmented" : wps < 7 ? "short" : wps < 12 ? "medium" : "long"
+                lines.append("Sentence complexity: \(complexity) (~\(Int(wps)) words/sentence)")
+            }
         }
 
         if let e = emoji {
@@ -169,6 +192,16 @@ struct StyleProfile: Codable, Sendable {
             }
             if let gp = v.greetingPatterns, !gp.isEmpty {
                 lines.append("Typical greeting: \"\(gp.first!)\"")
+            }
+            if let vr = v.vocabularyRichness {
+                let label = vr < 0.3 ? "repetitive (uses same words)" : vr < 0.5 ? "moderate" : "varied"
+                lines.append("Vocabulary variety: \(label)")
+            }
+        }
+
+        if let sent = sentiment {
+            if let tone = sent.toneLabel {
+                lines.append("Overall tone: \(tone)")
             }
         }
 

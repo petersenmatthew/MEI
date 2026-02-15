@@ -11,12 +11,33 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
+import nltk
+from nltk.tokenize import word_tokenize, sent_tokenize
+from nltk.corpus import stopwords
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+from nltk import ngrams as nltk_ngrams
+
 DATA_DIR = Path(__file__).parent.parent / "data"
 CONVERSATIONS_FILE = DATA_DIR / "conversations.json"
 STYLES_DIR = DATA_DIR / "styles"
 
 
-def analyze_style(messages):
+def ensure_nltk_data():
+    """Download required NLTK data packages if not already present."""
+    packages = {
+        "punkt_tab": "tokenizers/punkt_tab",
+        "vader_lexicon": "sentiment/vader_lexicon",
+        "stopwords": "corpora/stopwords",
+    }
+    for package, path in packages.items():
+        try:
+            nltk.data.find(path)
+        except LookupError:
+            print(f"  Downloading NLTK data: {package}...")
+            nltk.download(package, quiet=True)
+
+
+def analyze_style(messages, stop_words, sia):
     """Analyze a user's messages to extract style patterns."""
     my_messages = [m for m in messages if m["is_from_me"] and m.get("text")]
     if len(my_messages) < 20:
@@ -58,29 +79,62 @@ def analyze_style(messages):
     emoji_freq = len(all_emojis) / total if total > 0 else 0
     top_emojis = [e for e, _ in Counter(all_emojis).most_common(5)]
 
-    # Common phrases / words
-    words = []
+    # NLTK tokenization
+    all_tokens = []
+    all_sentences = []
     for t in texts:
-        words.extend(t.lower().split())
-    word_counts = Counter(words)
+        tokens = word_tokenize(t.lower())
+        word_tokens = [tok for tok in tokens if tok.isalpha()]
+        all_tokens.extend(word_tokens)
+        all_sentences.extend(sent_tokenize(t))
 
+    word_counts = Counter(all_tokens)
+
+    # Sentence complexity (avg words per sentence)
+    sentence_word_counts = [len(word_tokenize(s)) for s in all_sentences]
+    avg_words_per_sentence = (
+        sum(sentence_word_counts) / len(sentence_word_counts)
+        if sentence_word_counts
+        else 5.0
+    )
+
+    # Slang detection
     slang_words = {
         "lmao", "lol", "bruh", "bro", "bet", "nah", "fr", "ngl", "tbh",
         "lowkey", "highkey", "imo", "idk", "idc", "smh", "wya", "wyd",
         "omg", "af", "rn", "fam", "goated", "cooked", "bussin", "cap",
-        "no cap", "slay", "vibe", "lit", "sus", "deadass", "hella",
+        "slay", "vibe", "lit", "sus", "deadass", "hella",
         "finna", "yall", "aight", "yo", "ong", "ts", "shi", "dawg",
     }
     used_slang = [w for w in slang_words if word_counts.get(w, 0) >= 3]
     slang_level = "high" if len(used_slang) > 5 else "medium" if len(used_slang) > 2 else "low"
 
-    # Top phrases (2-3 word combinations)
-    bigrams = []
+    # Stopword-filtered bigrams via NLTK
+    filtered_bigrams = []
     for t in texts:
-        ws = t.lower().split()
-        for i in range(len(ws) - 1):
-            bigrams.append(f"{ws[i]} {ws[i+1]}")
-    top_bigrams = [b for b, c in Counter(bigrams).most_common(10) if c >= 3]
+        tokens = [tok.lower() for tok in word_tokenize(t) if tok.isalpha()]
+        content_tokens = [tok for tok in tokens if tok not in stop_words]
+        filtered_bigrams.extend([" ".join(bg) for bg in nltk_ngrams(content_tokens, 2)])
+    top_bigrams = [b for b, c in Counter(filtered_bigrams).most_common(10) if c >= 3]
+
+    # Vocabulary richness (Type-Token Ratio)
+    unique_words = set(all_tokens)
+    vocabulary_richness = len(unique_words) / len(all_tokens) if all_tokens else 0.0
+
+    # VADER sentiment analysis
+    compounds = [sia.polarity_scores(t)["compound"] for t in texts]
+    avg_compound = sum(compounds) / len(compounds) if compounds else 0.0
+    pos_ratio = sum(1 for c in compounds if c > 0.05) / len(compounds) if compounds else 0.0
+    neg_ratio = sum(1 for c in compounds if c < -0.05) / len(compounds) if compounds else 0.0
+
+    if avg_compound > 0.15:
+        tone_label = "positive"
+    elif avg_compound < -0.15:
+        tone_label = "negative"
+    elif pos_ratio > 0.4 and neg_ratio > 0.2:
+        tone_label = "mixed"
+    else:
+        tone_label = "neutral"
 
     # Greeting patterns
     greetings = {"hey", "hi", "hello", "yo", "sup", "whats up", "heyy", "heyyy", "hii", "yoo", "ayy"}
@@ -185,6 +239,7 @@ def analyze_style(messages):
             "uses_ellipsis": uses_ellipsis > 0.05,
             "uses_apostrophes": uses_apostrophes > 0.2,
             "abbreviation_level": slang_level,
+            "avg_words_per_sentence": round(avg_words_per_sentence, 1),
         },
         "emoji": {
             "frequency": round(emoji_freq, 3),
@@ -197,6 +252,13 @@ def analyze_style(messages):
             "greeting_patterns": sorted(greeting_patterns),
             "farewell_patterns": sorted(farewell_patterns),
             "filler_words": [w for w in ["like", "just", "actually", "literally", "basically", "ngl", "tbh", "lowkey"] if word_counts.get(w, 0) >= 5],
+            "vocabulary_richness": round(vocabulary_richness, 3),
+        },
+        "sentiment": {
+            "avg_compound": round(avg_compound, 3),
+            "tone_label": tone_label,
+            "positivity_ratio": round(pos_ratio, 3),
+            "negativity_ratio": round(neg_ratio, 3),
         },
         "behavior": {
             "multi_message_tendency": round(min(multi_msg_tendency, 1.0), 2),
@@ -227,6 +289,13 @@ def main():
         print(f"Error: {CONVERSATIONS_FILE} not found. Run extract_history.py first.")
         return
 
+    print("Ensuring NLTK data is available...")
+    ensure_nltk_data()
+
+    # Initialize shared NLTK resources
+    stop_words = set(stopwords.words("english"))
+    sia = SentimentIntensityAnalyzer()
+
     with open(CONVERSATIONS_FILE) as f:
         all_chats = json.load(f)
 
@@ -245,7 +314,7 @@ def main():
         if len(all_msgs) < 50:
             continue
 
-        style = analyze_style(all_msgs)
+        style = analyze_style(all_msgs, stop_words, sia)
         if style is None:
             continue
 
