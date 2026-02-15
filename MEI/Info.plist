@@ -4,5 +4,7 @@
 <dict>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>MEI needs to send messages through the Messages app on your behalf.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>MEI needs access to your contacts to select who to respond to.</string>
 </dict>
 </plist>

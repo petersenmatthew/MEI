@@ -1,11 +1,10 @@
 import SwiftUI
+import Contacts
 
 struct ContactsView: View {
     @Bindable var appState: AppState
     @State private var searchText = ""
     @State private var showAddContact = false
-    @State private var newContactID = ""
-    @State private var newContactName = ""
 
     var filteredContacts: [ContactConfig] {
         if searchText.isEmpty {
@@ -49,49 +48,248 @@ struct ContactsView: View {
             }
         }
         .sheet(isPresented: $showAddContact) {
-            addContactSheet
+            ContactPickerSheet(appState: appState, isPresented: $showAddContact)
         }
-    }
-
-    private var addContactSheet: some View {
-        VStack(spacing: 16) {
-            Text("Add Contact")
-                .font(.headline)
-
-            TextField("Phone number (e.g. +11234567890)", text: $newContactID)
-                .textFieldStyle(.roundedBorder)
-
-            TextField("Display name", text: $newContactName)
-                .textFieldStyle(.roundedBorder)
-
-            HStack {
-                Button("Cancel") {
-                    showAddContact = false
-                    newContactID = ""
-                    newContactName = ""
-                }
-
-                Spacer()
-
-                Button("Add") {
-                    let config = ContactConfig(
-                        contactID: newContactID,
-                        displayName: newContactName.isEmpty ? newContactID : newContactName,
-                        mode: .shadowOnly,
-                        customRules: []
-                    )
-                    appState.contacts.append(config)
-                    showAddContact = false
-                    newContactID = ""
-                    newContactName = ""
-                }
-                .disabled(newContactID.isEmpty)
-            }
-        }
-        .padding()
-        .frame(width: 350)
     }
 }
+
+// MARK: - Contact Picker Sheet
+
+struct ContactPickerSheet: View {
+    @Bindable var appState: AppState
+    @Binding var isPresented: Bool
+    @State private var searchText = ""
+    @State private var phoneContacts: [PhoneContact] = []
+    @State private var accessDenied = false
+    @State private var loading = true
+
+    var filteredPhoneContacts: [PhoneContact] {
+        if searchText.isEmpty { return phoneContacts }
+        return phoneContacts.filter {
+            $0.name.localizedCaseInsensitiveContains(searchText) ||
+            $0.phoneNumbers.contains { $0.formatted.localizedCaseInsensitiveContains(searchText) }
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Add from Contacts")
+                    .font(.headline)
+                Spacer()
+                Button("Done") { isPresented = false }
+            }
+            .padding()
+
+            Divider()
+
+            if accessDenied {
+                ContentUnavailableView {
+                    Label("No Access", systemImage: "person.crop.circle.badge.xmark")
+                } description: {
+                    Text("Grant Contacts access in System Settings > Privacy & Security > Contacts.")
+                }
+            } else if loading {
+                Spacer()
+                ProgressView("Loading contacts...")
+                Spacer()
+            } else if phoneContacts.isEmpty {
+                ContentUnavailableView {
+                    Label("No Contacts", systemImage: "person.crop.circle")
+                } description: {
+                    Text("No contacts with phone numbers found.")
+                }
+            } else {
+                TextField("Search contacts...", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+
+                List(filteredPhoneContacts) { contact in
+                    ContactPickerRow(contact: contact) { selectedNumber in
+                        addContact(name: contact.name, phoneNumber: selectedNumber)
+                    }
+                }
+            }
+        }
+        .frame(width: 400, height: 500)
+        .task {
+            await loadContacts()
+        }
+    }
+
+    private func loadContacts() async {
+        let store = CNContactStore()
+
+        do {
+            let granted = try await store.requestAccess(for: .contacts)
+            guard granted else {
+                accessDenied = true
+                loading = false
+                return
+            }
+        } catch {
+            accessDenied = true
+            loading = false
+            return
+        }
+
+        let existingIDs = Set(appState.contacts.map { $0.contactID })
+
+        let keysToFetch: [CNKeyDescriptor] = [
+            CNContactGivenNameKey as CNKeyDescriptor,
+            CNContactFamilyNameKey as CNKeyDescriptor,
+            CNContactPhoneNumbersKey as CNKeyDescriptor,
+            CNContactThumbnailImageDataKey as CNKeyDescriptor,
+        ]
+
+        var results: [PhoneContact] = []
+        let request = CNContactFetchRequest(keysToFetch: keysToFetch)
+        request.sortOrder = .givenName
+
+        do {
+            try store.enumerateContacts(with: request) { cnContact, _ in
+                let phones = cnContact.phoneNumbers.compactMap { labeled -> PhoneNumber? in
+                    let normalized = Self.normalizePhoneNumber(labeled.value.stringValue)
+                    guard !normalized.isEmpty, !existingIDs.contains(normalized) else { return nil }
+                    let label = CNLabeledValue<NSString>.localizedString(forLabel: labeled.label ?? "")
+                    return PhoneNumber(normalized: normalized, formatted: labeled.value.stringValue, label: label)
+                }
+                guard !phones.isEmpty else { return }
+
+                let name = [cnContact.givenName, cnContact.familyName]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " ")
+
+                results.append(PhoneContact(
+                    name: name.isEmpty ? "Unknown" : name,
+                    phoneNumbers: phones,
+                    thumbnailData: cnContact.thumbnailImageData
+                ))
+            }
+        } catch {
+            // Fetch failed — show empty state
+        }
+
+        phoneContacts = results
+        loading = false
+    }
+
+    private func addContact(name: String, phoneNumber: String) {
+        let config = ContactConfig(
+            contactID: phoneNumber,
+            displayName: name,
+            mode: .shadowOnly,
+            customRules: []
+        )
+        appState.contacts.append(config)
+
+        // Remove the number from the picker list so it can't be added again
+        for i in phoneContacts.indices {
+            phoneContacts[i].phoneNumbers.removeAll { $0.normalized == phoneNumber }
+        }
+        phoneContacts.removeAll { $0.phoneNumbers.isEmpty }
+    }
+
+    static func normalizePhoneNumber(_ raw: String) -> String {
+        let digits = raw.filter { $0.isNumber || $0 == "+" }
+        if digits.hasPrefix("+") { return digits }
+        // Assume US number if 10 digits with no country code
+        if digits.count == 10 { return "+1" + digits }
+        if digits.count == 11 && digits.hasPrefix("1") { return "+" + digits }
+        return digits.isEmpty ? "" : "+" + digits
+    }
+}
+
+// MARK: - Contact Picker Row
+
+struct ContactPickerRow: View {
+    let contact: PhoneContact
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        if contact.phoneNumbers.count == 1, let phone = contact.phoneNumbers.first {
+            Button {
+                onSelect(phone.normalized)
+            } label: {
+                HStack(spacing: 10) {
+                    contactAvatar
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(contact.name).font(.headline)
+                        Text(phone.formatted)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "plus.circle")
+                        .foregroundStyle(.blue)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } else {
+            DisclosureGroup {
+                ForEach(contact.phoneNumbers) { phone in
+                    Button {
+                        onSelect(phone.normalized)
+                    } label: {
+                        HStack {
+                            Text(phone.label)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 60, alignment: .leading)
+                            Text(phone.formatted)
+                                .font(.body)
+                            Spacer()
+                            Image(systemName: "plus.circle")
+                                .foregroundStyle(.blue)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    contactAvatar
+                    Text(contact.name).font(.headline)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var contactAvatar: some View {
+        if let data = contact.thumbnailData, let nsImage = NSImage(data: data) {
+            Image(nsImage: nsImage)
+                .resizable()
+                .frame(width: 32, height: 32)
+                .clipShape(Circle())
+        } else {
+            Image(systemName: "person.circle.fill")
+                .resizable()
+                .frame(width: 32, height: 32)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+// MARK: - Models
+
+struct PhoneContact: Identifiable {
+    let id = UUID()
+    let name: String
+    var phoneNumbers: [PhoneNumber]
+    let thumbnailData: Data?
+}
+
+struct PhoneNumber: Identifiable {
+    let id = UUID()
+    let normalized: String
+    let formatted: String
+    let label: String
+}
+
+// MARK: - Contact Row (existing)
 
 struct ContactRow: View {
     let contact: ContactConfig
