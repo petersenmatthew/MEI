@@ -53,7 +53,7 @@ All databases live in `~/Library/Application Support/MEI/`:
 ### Data Preparation Pipeline (`scripts/`)
 Python scripts run manually during setup to populate the RAG database:
 1. `extract_history.py` — reads `~/Library/Messages/chat.db`
-2. `extract_style.py` — generates per-contact style profiles
+2. `extract_style.py` — generates per-contact style profiles    ````````````88-drseaw   
 3. `generate_embeddings.py` — creates embeddings via Gemini API
 4. `import_to_sqlite.py` — imports chunks into `rag.db`
 

@@ -64,22 +64,28 @@ struct SettingsView: View {
 
                 // Active Hours
                 GroupBox("Active Hours") {
-                    HStack {
-                        Text("Respond between")
-                        Spacer()
-                        Picker("", selection: $appState.activeHoursStart) {
-                            ForEach(0..<24, id: \.self) { hour in
-                                Text(formatHour(hour)).tag(hour)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle("Limit active hours", isOn: $appState.activeHoursEnabled)
+
+                        if appState.activeHoursEnabled {
+                            HStack {
+                                Text("Respond between")
+                                Spacer()
+                                Picker("", selection: $appState.activeHoursStart) {
+                                    ForEach(0..<24, id: \.self) { hour in
+                                        Text(formatHour(hour)).tag(hour)
+                                    }
+                                }
+                                .frame(width: 100)
+                                Text("and")
+                                Picker("", selection: $appState.activeHoursEnd) {
+                                    ForEach(0..<24, id: \.self) { hour in
+                                        Text(formatHour(hour)).tag(hour)
+                                    }
+                                }
+                                .frame(width: 100)
                             }
                         }
-                        .frame(width: 100)
-                        Text("and")
-                        Picker("", selection: $appState.activeHoursEnd) {
-                            ForEach(0..<24, id: \.self) { hour in
-                                Text(formatHour(hour)).tag(hour)
-                            }
-                        }
-                        .frame(width: 100)
                     }
                     .padding(.vertical, 4)
                 }

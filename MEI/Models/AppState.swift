@@ -65,6 +65,7 @@ final class AppState {
     var sendDelayEnabled: Bool = true
     var sendDelaySeconds: Int = 30
     var killWord: String = ""
+    var activeHoursEnabled: Bool = true
     var activeHoursStart: Int = 8   // 8 AM
     var activeHoursEnd: Int = 23    // 11 PM
 
@@ -92,6 +93,7 @@ final class AppState {
     ]
 
     var isWithinActiveHours: Bool {
+        guard activeHoursEnabled else { return true }
         let hour = Calendar.current.component(.hour, from: Date())
         return hour >= activeHoursStart && hour < activeHoursEnd
     }

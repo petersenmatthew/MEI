@@ -7,6 +7,8 @@ Outputs structured conversation data as JSON.
 import sqlite3
 import json
 import os
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from collections import defaultdict
@@ -105,6 +107,15 @@ def split_into_conversations(messages, gap_minutes=60):
     return conversations
 
 
+def _open_full_disk_access_pane():
+    """Open System Settings to the Full Disk Access (Privacy) pane."""
+    url = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+    try:
+        subprocess.run(["open", url], check=True, capture_output=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+
 def main():
     if not os.path.exists(CHAT_DB):
         print(f"Error: chat.db not found at {CHAT_DB}")
@@ -112,7 +123,19 @@ def main():
         return
 
     print(f"Reading messages from {CHAT_DB}...")
-    chats = extract_messages(CHAT_DB)
+    try:
+        chats = extract_messages(CHAT_DB)
+    except sqlite3.DatabaseError as e:
+        if "authorization denied" in str(e).lower() or "not authorized" in str(e).lower():
+            print("\nAccess to Messages is blocked. This script needs Full Disk Access.")
+            print("Opening System Settings to Full Disk Access...")
+            _open_full_disk_access_pane()
+            print("\nPlease add this app to the list and turn it ON:")
+            print("  - Terminal (if you ran this from Terminal.app)")
+            print("  - Cursor (if you ran this from Cursor's terminal)")
+            print("Then quit and reopen that app, and run this script again.")
+            sys.exit(1)
+        raise
     print(f"Found {len(chats)} chats")
 
     # Process into conversations
