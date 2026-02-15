@@ -184,7 +184,7 @@ struct ContactPickerSheet: View {
         let config = ContactConfig(
             contactID: phoneNumber,
             displayName: name,
-            mode: .shadowOnly,
+            mode: .active,
             customRules: []
         )
         appState.contacts.append(config)
