@@ -1,7 +1,7 @@
 import Foundation
 
 actor GeminiClient {
-    private let model = "gemini-2.5-flash"
+    private let model = "gemini-2.5-flash-lite"
     private let baseURL = "https://generativelanguage.googleapis.com/v1beta"
 
     private var apiKey: String {
