@@ -5,17 +5,16 @@ Reads conversations.json from extract_history.py output.
 """
 
 import json
-import os
 import re
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
 import nltk
 from nltk.tokenize import word_tokenize, sent_tokenize
-from nltk.corpus import stopwords
+from nltk.corpus import stopwords, words
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
-from nltk import ngrams as nltk_ngrams
+from nltk import ngrams as nltk_ngrams, pos_tag
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 CONVERSATIONS_FILE = DATA_DIR / "conversations.json"
@@ -28,6 +27,8 @@ def ensure_nltk_data():
         "punkt_tab": "tokenizers/punkt_tab",
         "vader_lexicon": "sentiment/vader_lexicon",
         "stopwords": "corpora/stopwords",
+        "words": "corpora/words",
+        "averaged_perceptron_tagger_eng": "taggers/averaged_perceptron_tagger_eng",
     }
     for package, path in packages.items():
         try:
@@ -37,7 +38,48 @@ def ensure_nltk_data():
             nltk.download(package, quiet=True)
 
 
-def analyze_style(messages, stop_words, sia):
+def find_conversation_boundaries(messages, gap_minutes=60):
+    """Split messages into conversations based on time gaps.
+    Returns list of (start_idx, end_idx) tuples for each conversation."""
+    if not messages:
+        return []
+    boundaries = []
+    convo_start = 0
+    for i in range(1, len(messages)):
+        try:
+            prev_dt = datetime.fromisoformat(messages[i - 1]["date"])
+            curr_dt = datetime.fromisoformat(messages[i]["date"])
+            gap = (curr_dt - prev_dt).total_seconds() / 60
+            if gap > gap_minutes:
+                boundaries.append((convo_start, i))
+                convo_start = i
+        except (ValueError, TypeError):
+            continue
+    boundaries.append((convo_start, len(messages)))
+    return boundaries
+
+
+def _detect_filler_words(texts, word_counts, stop_words, total):
+    """Detect filler words via POS tagging — high-frequency non-content words."""
+    # POS tags for filler-like words: adverbs (RB), interjections (UH), particles (RP)
+    filler_tags = {"RB", "UH", "RP"}
+    # Count POS tags across all messages
+    tag_counts = Counter()
+    for t in texts:
+        tagged = pos_tag(word_tokenize(t.lower()))
+        for word, tag in tagged:
+            if word.isalpha() and tag in filler_tags:
+                tag_counts[word] += 1
+    # Filler = appears in >5% of messages, isn't a stopword, and is tagged as filler-like
+    min_count = max(5, int(total * 0.05))
+    fillers = [
+        w for w, c in tag_counts.most_common(20)
+        if c >= min_count and w not in stop_words and len(w) > 1
+    ]
+    return fillers[:10]
+
+
+def analyze_style(messages, stop_words, sia, english_words):
     """Analyze a user's messages to extract style patterns."""
     my_messages = [m for m in messages if m["is_from_me"] and m.get("text")]
     if len(my_messages) < 20:
@@ -98,15 +140,23 @@ def analyze_style(messages, stop_words, sia):
         else 5.0
     )
 
-    # Slang detection
-    slang_words = {
-        "lmao", "lol", "bruh", "bro", "bet", "nah", "fr", "ngl", "tbh",
-        "lowkey", "highkey", "imo", "idk", "idc", "smh", "wya", "wyd",
-        "omg", "af", "rn", "fam", "goated", "cooked", "bussin", "cap",
-        "slay", "vibe", "lit", "sus", "deadass", "hella",
-        "finna", "yall", "aight", "yo", "ong", "ts", "shi", "dawg",
+    # Slang detection — words used frequently that aren't in the English dictionary
+    # Filter out iMessage tapback/reaction artifacts and tokenization fragments
+    tapback_artifacts = {
+        "loved", "liked", "disliked", "emphasized", "questioned", "laughed",
+        "image", "attachment",
     }
-    used_slang = [w for w in slang_words if word_counts.get(w, 0) >= 3]
+    tokenization_fragments = {"gon", "wan", "got", "na", "ta", "im", "dont", "didnt", "cant", "wont", "thats"}
+    used_slang = [
+        w for w, count in word_counts.items()
+        if count >= 3
+        and 2 <= len(w) <= 10
+        and w not in english_words
+        and w not in stop_words
+        and w not in tapback_artifacts
+        and w not in tokenization_fragments
+        and not w.startswith("http")
+    ]
     slang_level = "high" if len(used_slang) > 5 else "medium" if len(used_slang) > 2 else "low"
 
     # Stopword-filtered bigrams via NLTK
@@ -115,7 +165,12 @@ def analyze_style(messages, stop_words, sia):
         tokens = [tok.lower() for tok in word_tokenize(t) if tok.isalpha()]
         content_tokens = [tok for tok in tokens if tok not in stop_words]
         filtered_bigrams.extend([" ".join(bg) for bg in nltk_ngrams(content_tokens, 2)])
-    top_bigrams = [b for b, c in Counter(filtered_bigrams).most_common(10) if c >= 3]
+    # Filter out bigrams containing tapback/reaction words
+    tapback_words = {"loved", "liked", "disliked", "emphasized", "questioned", "laughed"}
+    top_bigrams = [
+        b for b, c in Counter(filtered_bigrams).most_common(15) if c >= 3
+        and not any(tw in b for tw in tapback_words)
+    ][:10]
 
     # Vocabulary richness (Type-Token Ratio)
     unique_words = set(all_tokens)
@@ -136,19 +191,45 @@ def analyze_style(messages, stop_words, sia):
     else:
         tone_label = "neutral"
 
-    # Greeting patterns
-    greetings = {"hey", "hi", "hello", "yo", "sup", "whats up", "heyy", "heyyy", "hii", "yoo", "ayy"}
-    greeting_patterns = [g for g in greetings if any(t.lower().startswith(g) for t in texts)]
-
-    # Farewell patterns
-    farewells = {"bye", "cya", "later", "peace", "gn", "goodnight", "night", "bet", "aight", "ttyl"}
-    farewell_patterns = [f for f in farewells if word_counts.get(f, 0) >= 2]
+    # Greeting patterns — extract from conversation-opening messages
+    all_msgs = messages
+    boundaries = find_conversation_boundaries(all_msgs)
+    opener_words = Counter()
+    closer_words = Counter()
+    for start, end in boundaries:
+        # Find first message from me in this conversation
+        for idx in range(start, min(start + 3, end)):
+            if all_msgs[idx]["is_from_me"] and all_msgs[idx].get("text"):
+                first_word = all_msgs[idx]["text"].lower().split()[0] if all_msgs[idx]["text"].strip() else None
+                if first_word and first_word.isalpha():
+                    opener_words[first_word] += 1
+                break
+        # Find last message from me in this conversation
+        for idx in range(end - 1, max(end - 4, start - 1), -1):
+            if all_msgs[idx]["is_from_me"] and all_msgs[idx].get("text"):
+                last_word = all_msgs[idx]["text"].lower().split()[-1] if all_msgs[idx]["text"].strip() else None
+                if last_word and last_word.isalpha():
+                    closer_words[last_word] += 1
+                break
+    # Filter out generic response words and iMessage tapback artifacts
+    generic_responses = {
+        "ok", "okay", "yes", "yea", "yeah", "yep", "yup", "no", "nah", "nope",
+        "sure", "true", "right", "k", "lol", "haha", "lmao", "loved", "thanks",
+        "emphasized", "liked", "disliked", "questioned", "laughed", "image",
+    }
+    greeting_patterns = [
+        w for w, c in opener_words.most_common(10)
+        if c >= 3 and w not in stop_words and w not in generic_responses
+    ]
+    farewell_patterns = [
+        w for w, c in closer_words.most_common(10)
+        if c >= 3 and w not in stop_words and w not in generic_responses
+    ]
 
     # Multi-message tendency (consecutive messages from me)
     consecutive_bursts = 0
     burst_lengths = []
     i = 0
-    all_msgs = messages  # includes both sides
     while i < len(all_msgs):
         if all_msgs[i]["is_from_me"]:
             burst_start = i
@@ -193,24 +274,30 @@ def analyze_style(messages, stop_words, sia):
     hour_counts = Counter(hours)
     active_hours = [h for h, c in hour_counts.most_common(10)]
 
-    # Topic detection (simple keyword matching)
-    topic_keywords = {
-        "food": ["food", "eat", "dinner", "lunch", "hungry", "restaurant", "pizza", "sushi", "ramen"],
-        "gaming": ["game", "play", "gaming", "xbox", "ps5", "pc", "valorant", "league", "fortnite"],
-        "school": ["class", "exam", "midterm", "final", "homework", "prof", "lecture", "study"],
-        "sports": ["game", "goal", "score", "team", "play", "win", "lost", "season"],
-        "music": ["song", "album", "playlist", "listen", "concert", "spotify"],
-        "movies": ["movie", "film", "watch", "netflix", "show", "series", "episode"],
-        "travel": ["trip", "travel", "flight", "hotel", "vacation", "airport"],
-        "work": ["work", "job", "meeting", "boss", "office", "deadline"],
-    }
-    topic_scores = {}
-    all_text = " ".join(texts).lower()
-    for topic, keywords in topic_keywords.items():
-        score = sum(all_text.count(k) for k in keywords)
-        if score >= 5:
-            topic_scores[topic] = score
-    common_topics = [t for t, _ in sorted(topic_scores.items(), key=lambda x: -x[1])[:5]]
+    # Topic detection — extract frequent nouns via POS tagging
+    # Words to exclude: generic nouns, conversational filler, slang, artifacts
+    topic_exclude = {
+        "thing", "things", "stuff", "way", "time", "times", "day", "days",
+        "people", "person", "lot", "bit", "kind", "part", "ones", "something",
+        "anything", "everything", "nothing", "someone", "everyone", "man",
+        "guy", "guys", "girl", "girls", "one", "ones", "year", "week", "month",
+        "lol", "bro", "bruh", "yeah", "yea", "nah", "okay", "idk", "rn",
+        "yes", "wait", "gonna", "wanna", "gotta", "cause", "tho", "doe",
+        "like", "thanks", "thank", "please", "sorry", "love", "loved",
+        "gon", "wan", "got", "na", "ta", "im", "dont", "didnt", "cant", "wont",
+        "thats", "sure", "hello",
+        "loved", "liked", "disliked", "emphasized", "questioned", "laughed",
+        "image", "attachment",
+    } | set(used_slang)
+    noun_counts = Counter()
+    for t in texts:
+        tagged = pos_tag(word_tokenize(t.lower()))
+        for word, tag in tagged:
+            if tag.startswith("NN") and word.isalpha() and len(word) > 2:
+                if word not in stop_words and word not in topic_exclude:
+                    if not word.startswith("http"):
+                        noun_counts[word] += 1
+    common_topics = [n for n, c in noun_counts.most_common(8) if c >= 5]
 
     def freq_label(ratio):
         if ratio < 0.05:
@@ -248,10 +335,10 @@ def analyze_style(messages, stop_words, sia):
         },
         "vocabulary": {
             "slang_level": slang_level,
-            "top_phrases": sorted(used_slang)[:10] + top_bigrams[:5],
+            "top_phrases": sorted(used_slang, key=lambda w: -word_counts[w])[:10] + top_bigrams[:5],
             "greeting_patterns": sorted(greeting_patterns),
             "farewell_patterns": sorted(farewell_patterns),
-            "filler_words": [w for w in ["like", "just", "actually", "literally", "basically", "ngl", "tbh", "lowkey"] if word_counts.get(w, 0) >= 5],
+            "filler_words": _detect_filler_words(texts, word_counts, stop_words, total),
             "vocabulary_richness": round(vocabulary_richness, 3),
         },
         "sentiment": {
@@ -294,6 +381,7 @@ def main():
 
     # Initialize shared NLTK resources
     stop_words = set(stopwords.words("english"))
+    english_words = set(w.lower() for w in words.words())
     sia = SentimentIntensityAnalyzer()
 
     with open(CONVERSATIONS_FILE) as f:
@@ -314,7 +402,7 @@ def main():
         if len(all_msgs) < 50:
             continue
 
-        style = analyze_style(all_msgs, stop_words, sia)
+        style = analyze_style(all_msgs, stop_words, sia, english_words)
         if style is None:
             continue
 

@@ -68,6 +68,7 @@ def embed_text(text, retries=3):
             result = genai.embed_content(
                 model="models/gemini-embedding-001",
                 content=text,
+                output_dimensionality=768,
             )
             return result["embedding"]
         except Exception as e:
