@@ -1,5 +1,11 @@
 import Foundation
 
+struct BuiltPrompt {
+    let systemInstruction: String
+    let conversationTurns: [GeminiClient.ConversationTurn]
+    let finalUserMessage: String
+}
+
 struct PromptBuilder {
     static func build(
         message: ChatMessage,
@@ -7,39 +13,84 @@ struct PromptBuilder {
         styleProfile: StyleProfile?,
         conversationHistory: [ChatMessage],
         restrictedTopics: Set<String>
-    ) -> String {
-        var sections: [String] = []
+    ) -> BuiltPrompt {
+        // --- System instruction (goes into Gemini's system_instruction field) ---
+        var systemParts: [String] = []
+        systemParts.append(buildSystemSection(restrictedTopics: restrictedTopics))
 
-        // System instructions
-        sections.append(buildSystemSection(restrictedTopics: restrictedTopics))
-
-        // Style profile
         if let style = styleProfile {
-            sections.append(buildStyleSection(style: style, contactName: message.displayName))
+            systemParts.append(buildStyleSection(style: style, contactName: message.displayName))
         }
 
-        // RAG results
         if !ragResults.isEmpty {
-            sections.append(buildRAGSection(chunks: ragResults))
+            systemParts.append(buildRAGSection(chunks: ragResults))
         }
 
-        // Conversation history
-        if !conversationHistory.isEmpty {
-            sections.append(buildConversationSection(
-                history: conversationHistory,
-                contactName: message.displayName
-            ))
+        let systemInstruction = systemParts.joined(separator: "\n\n")
+
+        // --- Conversation history as proper multi-turn contents ---
+        var turns: [GeminiClient.ConversationTurn] = []
+
+        for msg in conversationHistory {
+            let role = msg.isFromMe ? "model" : "user"
+            turns.append(.init(role: role, text: msg.text))
         }
 
-        // Final instruction
-        sections.append(buildResponseInstruction(contactName: message.displayName, style: styleProfile))
+        // Merge consecutive same-role turns (Gemini requires alternating roles)
+        turns = mergeConsecutiveTurns(turns)
 
-        return sections.joined(separator: "\n\n")
+        // --- Final user message: the new incoming message to reply to ---
+        // If the last turn is already a "user" turn containing this message (from history),
+        // we don't need to add it again. Otherwise, add it.
+        let lastUserText = turns.last.flatMap { $0.role == "user" ? $0.text : nil }
+        let alreadyIncluded = lastUserText?.contains(message.text) == true
+
+        let finalMessage: String
+        if alreadyIncluded {
+            finalMessage = ""
+        } else {
+            finalMessage = message.text
+        }
+
+        return BuiltPrompt(
+            systemInstruction: systemInstruction,
+            conversationTurns: turns,
+            finalUserMessage: finalMessage
+        )
+    }
+
+    /// Merge consecutive turns with the same role by joining their text.
+    /// Gemini API requires alternating user/model roles.
+    private static func mergeConsecutiveTurns(
+        _ turns: [GeminiClient.ConversationTurn]
+    ) -> [GeminiClient.ConversationTurn] {
+        guard !turns.isEmpty else { return [] }
+
+        var merged: [GeminiClient.ConversationTurn] = []
+        var currentRole = turns[0].role
+        var currentTexts = [turns[0].text]
+
+        for turn in turns.dropFirst() {
+            if turn.role == currentRole {
+                currentTexts.append(turn.text)
+            } else {
+                merged.append(.init(role: currentRole, text: currentTexts.joined(separator: "\n")))
+                currentRole = turn.role
+                currentTexts = [turn.text]
+            }
+        }
+        merged.append(.init(role: currentRole, text: currentTexts.joined(separator: "\n")))
+
+        // Gemini requires the first turn to be "user". If it starts with "model", prepend a placeholder.
+        if merged.first?.role == "model" {
+            merged.insert(.init(role: "user", text: "(conversation start)"), at: 0)
+        }
+
+        return merged
     }
 
     private static func buildSystemSection(restrictedTopics: Set<String>) -> String {
         var text = """
-        [SYSTEM]
         You are impersonating Matthew in an iMessage conversation. Your goal \
         is to respond EXACTLY as Matthew would — same tone, same slang, same \
         punctuation habits, same message length. You are not an AI assistant. \
@@ -47,12 +98,14 @@ struct PromptBuilder {
         helpful in an AI-assistant way. Just be Matthew.
 
         CRITICAL RULES:
-        - Match the style profile EXACTLY. If it says no capitalization, never capitalize. If it says no periods, never use periods.
-        - Keep responses the same length as Matthew's typical messages with this person. Do not over-explain or be verbose.
-        - If you're not sure how Matthew would respond, say CONFIDENCE:LOW at the start of your response.
+        - Keep responses short and casual like a real text message. Do not over-explain or be verbose.
+        - Reply directly to what was just said to you. Stay on topic.
+        - If you're not sure how Matthew would respond, start your response with CONFIDENCE:LOW
         - Never reveal you are an AI. Never say "as an AI" or anything similar.
-        - If the conversation gets serious, emotional, or you're unsure, respond with CONFIDENCE:LOW.
+        - If the conversation gets serious, emotional, or you're unsure, respond with CONFIDENCE:LOW
         - If sending multiple short messages instead of one long one, separate them with |||
+        - Use all lowercase, no periods, casual texting style
+        - Do NOT include any prefix like "Matthew:" in your response. Just write the message text directly.
         """
 
         if !restrictedTopics.isEmpty {
@@ -70,7 +123,7 @@ struct PromptBuilder {
     }
 
     private static func buildRAGSection(chunks: [RAGChunk]) -> String {
-        var text = "[SIMILAR PAST CONVERSATIONS — from RAG]\n"
+        var text = "[SIMILAR PAST CONVERSATIONS — use these as reference for how Matthew texts]\n"
 
         for chunk in chunks {
             text += "---\n"
@@ -80,37 +133,5 @@ struct PromptBuilder {
         text += "---"
 
         return text
-    }
-
-    private static func buildConversationSection(
-        history: [ChatMessage],
-        contactName: String
-    ) -> String {
-        var text = "[CURRENT CONVERSATION]\n"
-
-        for msg in history {
-            let sender = msg.isFromMe ? "Matthew" : contactName
-            text += "\(sender): \(msg.text)\n"
-        }
-
-        return text
-    }
-
-    private static func buildResponseInstruction(contactName: String, style: StyleProfile?) -> String {
-        var instruction = "[Respond as Matthew. Match his exact style."
-
-        if let s = style?.style {
-            var descriptors: [String] = []
-            if s.capitalization == "never" { descriptors.append("no caps") }
-            if s.usesPeriods == false { descriptors.append("no periods") }
-            if let sl = style?.vocabulary?.slangLevel, sl == "high" { descriptors.append("casual") }
-            if !descriptors.isEmpty {
-                instruction += " \(descriptors.joined(separator: ", "))."
-            }
-        }
-
-        instruction += " If multiple messages, separate with |||]"
-
-        return instruction
     }
 }

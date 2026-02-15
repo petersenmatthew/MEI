@@ -25,11 +25,17 @@ actor MessageSender {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
 
-        // Use the chat identifier to find the right conversation
+        // Extract the phone/email from chat identifier (e.g. "iMessage;-;+11234567890" -> "+11234567890")
+        let recipient = chatIdentifier.components(separatedBy: ";").last ?? chatIdentifier
+        let escapedRecipient = recipient
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+
         let script = """
         tell application "Messages"
-            set targetChat to a reference to chat id "\(chatIdentifier)"
-            send "\(escapedText)" to targetChat
+            set targetService to 1st account whose service type = iMessage
+            set targetBuddy to participant "\(escapedRecipient)" of targetService
+            send "\(escapedText)" to targetBuddy
         end tell
         """
 

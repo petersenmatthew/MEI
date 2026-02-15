@@ -9,8 +9,13 @@ actor GeminiClient {
     }
 
     struct GeminiRequest: Encodable {
+        let system_instruction: SystemInstruction?
         let contents: [Content]
         let generationConfig: GenerationConfig?
+
+        struct SystemInstruction: Encodable {
+            let parts: [Part]
+        }
 
         struct Content: Encodable {
             let role: String
@@ -50,7 +55,16 @@ actor GeminiClient {
         }
     }
 
-    func generate(systemPrompt: String, userMessage: String) async throws -> String {
+    struct ConversationTurn {
+        let role: String  // "user" or "model"
+        let text: String
+    }
+
+    func generate(
+        systemPrompt: String,
+        conversationHistory: [ConversationTurn],
+        userMessage: String
+    ) async throws -> String {
         let key = apiKey
         guard !key.isEmpty else {
             throw GeminiError.noAPIKey
@@ -58,15 +72,27 @@ actor GeminiClient {
 
         let url = URL(string: "\(baseURL)/models/\(model):generateContent?key=\(key)")!
 
+        // Build contents array from conversation history + final user message
+        var contents: [GeminiRequest.Content] = conversationHistory.map { turn in
+            .init(role: turn.role, parts: [.init(text: turn.text)])
+        }
+
+        // Add the final user message (the instruction to respond)
+        if !userMessage.isEmpty {
+            contents.append(.init(role: "user", parts: [.init(text: userMessage)]))
+        }
+
+        // Ensure contents is not empty
+        if contents.isEmpty {
+            contents.append(.init(role: "user", parts: [.init(text: "Hello")]))
+        }
+
         let request = GeminiRequest(
-            contents: [
-                .init(role: "user", parts: [
-                    .init(text: "\(systemPrompt)\n\n\(userMessage)")
-                ])
-            ],
+            system_instruction: .init(parts: [.init(text: systemPrompt)]),
+            contents: contents,
             generationConfig: .init(
                 temperature: 0.9,
-                maxOutputTokens: 256,
+                maxOutputTokens: 1024,
                 topP: 0.95
             )
         )

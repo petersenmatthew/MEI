@@ -206,11 +206,23 @@ actor MessageReader {
         return 0
     }
 
-    func hasRecentOutgoingMessage(chatIdentifier: String, withinSeconds: TimeInterval = 60) throws -> Bool {
+    /// Check if the real user (not MEI) has sent an outgoing message recently.
+    /// `afterDate` allows filtering out MEI's own sends — only counts outgoing messages after that date.
+    func hasRecentOutgoingMessage(
+        chatIdentifier: String,
+        withinSeconds: TimeInterval = 60,
+        afterDate: Date? = nil
+    ) throws -> Bool {
         guard let db = db else { throw MessageReaderError.notOpen }
 
         let cutoff = Date().addingTimeInterval(-withinSeconds)
-        let cutoffNano = Int64(cutoff.timeIntervalSinceReferenceDate * 1_000_000_000)
+        // Use the later of cutoff or afterDate so we ignore MEI's own messages
+        let effectiveCutoff = if let afterDate = afterDate {
+            max(cutoff, afterDate)
+        } else {
+            cutoff
+        }
+        let cutoffNano = Int64(effectiveCutoff.timeIntervalSinceReferenceDate * 1_000_000_000)
 
         let query = """
             SELECT COUNT(*) FROM message m

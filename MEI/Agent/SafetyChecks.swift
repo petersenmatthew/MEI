@@ -2,10 +2,12 @@ import Foundation
 
 struct SafetyChecks {
     /// Check if the agent should process this message at all.
+    /// `lastMEISendTime` is when MEI last sent to this chat, so we can ignore our own outgoing messages.
     static func shouldProcess(
         message: ChatMessage,
         appState: AppState,
-        messageReader: MessageReader
+        messageReader: MessageReader,
+        lastMEISendTime: Date? = nil
     ) async -> SafetyResult {
         // Skip our own messages
         guard !message.isFromMe else {
@@ -38,10 +40,11 @@ struct SafetyChecks {
             break
         }
 
-        // Check if user is actively texting this person
+        // Check if user is actively texting this person (ignore MEI's own sends)
         if let isActive = try? await messageReader.hasRecentOutgoingMessage(
             chatIdentifier: message.chatID,
-            withinSeconds: 60
+            withinSeconds: 60,
+            afterDate: lastMEISendTime
         ), isActive {
             return .defer(reason: "User is actively texting this contact")
         }

@@ -13,6 +13,9 @@ final class AgentLoop {
 
     private var pollTimer: Timer?
     private var isProcessing = false
+    /// Tracks when MEI last sent a message to each chat, so we don't
+    /// mistake our own replies for "user is actively typing".
+    private var lastMEISendTime: [String: Date] = [:]
 
     init(appState: AppState) {
         self.appState = appState
@@ -80,11 +83,14 @@ final class AgentLoop {
     }
 
     private func processMessage(_ message: ChatMessage) async {
+        print("[MEI] ── Processing message from \(message.displayName): \"\(message.text.prefix(50))\"")
+
         // 1. Safety checks
         let safety = await SafetyChecks.shouldProcess(
             message: message,
             appState: appState,
-            messageReader: messageReader
+            messageReader: messageReader,
+            lastMEISendTime: lastMEISendTime[message.chatID]
         )
 
         switch safety {
@@ -125,15 +131,17 @@ final class AgentLoop {
 
             // 3. Load style profile
             let style = loadStyleProfile(for: message.contactID)
+            print("[MEI] Style profile: \(style != nil ? "loaded" : "none")")
 
             // 4. Get conversation history
             let history = try await messageReader.fetchRecentMessages(
                 chatIdentifier: message.chatID,
                 limit: 20
             )
+            print("[MEI] Conversation history: \(history.count) messages")
 
             // 5. Build prompt
-            let prompt = PromptBuilder.build(
+            let builtPrompt = PromptBuilder.build(
                 message: message,
                 ragResults: ragChunks,
                 styleProfile: style,
@@ -141,13 +149,28 @@ final class AgentLoop {
                 restrictedTopics: appState.restrictedTopics
             )
 
+            // Debug: log the full prompt
+            print("[MEI] ── SYSTEM INSTRUCTION ──")
+            print(builtPrompt.systemInstruction)
+            print("[MEI] ── CONVERSATION TURNS (\(builtPrompt.conversationTurns.count)) ──")
+            for turn in builtPrompt.conversationTurns {
+                print("[MEI]   \(turn.role): \(turn.text.prefix(100))")
+            }
+            if !builtPrompt.finalUserMessage.isEmpty {
+                print("[MEI]   → final user msg: \(builtPrompt.finalUserMessage.prefix(100))")
+            }
+            print("[MEI] ── END PROMPT, calling Gemini... ──")
+
             // 6. Call Gemini
             let rawResponse = try await geminiClient.generate(
-                systemPrompt: prompt,
-                userMessage: ""
+                systemPrompt: builtPrompt.systemInstruction,
+                conversationHistory: builtPrompt.conversationTurns,
+                userMessage: builtPrompt.finalUserMessage
             )
+            print("[MEI] Gemini response received")
 
             let response = AgentResponse(rawText: rawResponse)
+            print("[MEI] Parsed response: confidence=\(response.confidence), messages=\(response.messages.count)")
 
             // 7. Check response safety
             let responseCheck = SafetyChecks.checkResponse(
@@ -157,6 +180,7 @@ final class AgentLoop {
 
             switch responseCheck {
             case .defer(let reason):
+                print("[MEI] Deferred (\(message.displayName)): \(reason)")
                 logExchange(
                     message: message,
                     response: response,
@@ -174,11 +198,13 @@ final class AgentLoop {
             case .skip, .kill:
                 return
             case .proceed:
+                print("[MEI] Response safety check passed, proceeding to send")
                 break
             }
 
             // 8. Calculate reply delay
             let delay = BehaviorEngine.sampleReplyDelay(for: style)
+            print("[MEI] Reply delay: \(String(format: "%.1f", delay))s, waiting...")
 
             if isShadow {
                 // Shadow mode: log but don't send
@@ -198,17 +224,21 @@ final class AgentLoop {
             // 9. Wait for reply delay
             try await Task.sleep(for: .seconds(delay))
 
-            // 10. Re-check if user started typing during delay
+            // 10. Re-check if user started typing during delay (ignore MEI's own sends)
             if let isActive = try? await messageReader.hasRecentOutgoingMessage(
                 chatIdentifier: message.chatID,
-                withinSeconds: 60
+                withinSeconds: 60,
+                afterDate: lastMEISendTime[message.chatID]
             ), isActive {
                 print("[MEI] User started typing during delay, aborting")
                 return
             }
 
+            print("[MEI] Delay complete, sending response...")
+
             // 11. Send messages
             for (index, msgText) in response.messages.enumerated() {
+                print("[MEI] Sending message \(index + 1)/\(response.messages.count): \"\(msgText.prefix(50))\"")
                 try await messageSender.sendToChat(msgText, chatIdentifier: message.chatID)
 
                 if index < response.messages.count - 1 {
@@ -216,6 +246,9 @@ final class AgentLoop {
                     try await Task.sleep(for: .seconds(burstDelay))
                 }
             }
+
+            // Record that MEI just sent to this chat
+            lastMEISendTime[message.chatID] = Date()
 
             // 12. Log
             logExchange(

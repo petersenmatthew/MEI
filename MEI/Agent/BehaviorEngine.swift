@@ -3,18 +3,15 @@ import Foundation
 struct BehaviorEngine {
     /// Sample a realistic reply delay based on the contact's style profile.
     static func sampleReplyDelay(for style: StyleProfile?) -> TimeInterval {
-        let meanMinutes = style?.behavior?.responseTimeMeanMinutes ?? 3.0
-        let stdMinutes = style?.behavior?.responseTimeStdMinutes ?? 2.0
-
-        // Sample from a log-normal distribution for realistic delays
-        let normalSample = randomNormal(mean: 0, std: 1)
-        let logMean = log(meanMinutes) - 0.5 * log(1 + (stdMinutes * stdMinutes) / (meanMinutes * meanMinutes))
-        let logStd = sqrt(log(1 + (stdMinutes * stdMinutes) / (meanMinutes * meanMinutes)))
-
-        let delayMinutes = exp(logMean + logStd * normalSample)
-
-        // Clamp between 30 seconds and 30 minutes
-        let delaySeconds = max(30, min(delayMinutes * 60, 1800))
+        // TODO: Restore realistic delays before production
+        // let meanMinutes = style?.behavior?.responseTimeMeanMinutes ?? 3.0
+        // let stdMinutes = style?.behavior?.responseTimeStdMinutes ?? 2.0
+        // let normalSample = randomNormal(mean: 0, std: 1)
+        // let logMean = log(meanMinutes) - 0.5 * log(1 + (stdMinutes * stdMinutes) / (meanMinutes * meanMinutes))
+        // let logStd = sqrt(log(1 + (stdMinutes * stdMinutes) / (meanMinutes * meanMinutes)))
+        // let delayMinutes = exp(logMean + logStd * normalSample)
+        // let delaySeconds = max(30, min(delayMinutes * 60, 1800))
+        let delaySeconds = Double.random(in: 5.0...10.0)
 
         return delaySeconds
     }

@@ -61,7 +61,7 @@ struct AgentExchange: Identifiable, Sendable {
 @Observable
 final class AppState {
     var mode: AgentMode = .paused
-    var confidenceThreshold: Double = 0.75
+    var confidenceThreshold: Double = 0.2  // TODO: Restore to 0.75 before production
     var sendDelayEnabled: Bool = true
     var sendDelaySeconds: Int = 30
     var killWord: String = ""
@@ -95,6 +95,6 @@ final class AppState {
     }
 
     func contactMode(for contactID: String) -> ContactMode {
-        contacts.first(where: { $0.contactID == contactID })?.mode ?? .blacklist
+        contacts.first(where: { $0.contactID == contactID })?.mode ?? .active
     }
 }
