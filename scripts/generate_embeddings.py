@@ -11,23 +11,24 @@ import hashlib
 from pathlib import Path
 
 try:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
 except ImportError:
-    print("Install google-generativeai: pip install google-generativeai")
+    print("Install google-genai: pip install google-genai")
     exit(1)
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 CONVERSATIONS_FILE = DATA_DIR / "conversations.json"
 CHUNKS_FILE = DATA_DIR / "chunks_with_embeddings.json"
 
-# Configure - set your API key
-API_KEY = os.environ.get("GEMINI_API_KEY", "")
+# Configure - set your API key (or GEMINI_API_KEY / GOOGLE_API_KEY env var)
+API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
 if not API_KEY:
     print("Set GEMINI_API_KEY environment variable")
     print("  export GEMINI_API_KEY=your_key_here")
     exit(1)
 
-genai.configure(api_key=API_KEY)
+client = genai.Client(api_key=API_KEY)
 
 CHUNK_SIZE = 10  # messages per chunk
 CHUNK_OVERLAP = 3  # overlap between chunks
@@ -65,12 +66,14 @@ def embed_text(text, retries=3):
     """Generate embedding for text using Gemini Embedding API."""
     for attempt in range(retries):
         try:
-            result = genai.embed_content(
-                model="models/gemini-embedding-001",
-                content=text,
-                output_dimensionality=768,
+            response = client.models.embed_content(
+                model="gemini-embedding-001",
+                contents=text,
+                config=types.EmbedContentConfig(output_dimensionality=768),
             )
-            return result["embedding"]
+            if response.embeddings:
+                return list(response.embeddings[0].values)
+            return None
         except Exception as e:
             if attempt < retries - 1:
                 wait = 2 ** attempt
