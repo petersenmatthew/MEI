@@ -154,10 +154,10 @@ final class AgentLoop {
             print(builtPrompt.systemInstruction)
             print("[MEI] ── CONVERSATION TURNS (\(builtPrompt.conversationTurns.count)) ──")
             for turn in builtPrompt.conversationTurns {
-                print("[MEI]   \(turn.role): \(turn.text.prefix(100))")
+                print("[MEI]   \(turn.role): \(turn.text)")
             }
             if !builtPrompt.finalUserMessage.isEmpty {
-                print("[MEI]   → final user msg: \(builtPrompt.finalUserMessage.prefix(100))")
+                print("[MEI]   → final user msg: \(builtPrompt.finalUserMessage)")
             }
             print("[MEI] ── END PROMPT, calling Gemini... ──")
 
@@ -247,8 +247,10 @@ final class AgentLoop {
                 }
             }
 
-            // Record that MEI just sent to this chat
-            lastMEISendTime[message.chatID] = Date()
+            // Record that MEI just sent to this chat.
+            // Add a buffer to account for the delay between our send call
+            // and the message actually appearing in chat.db with its timestamp.
+            lastMEISendTime[message.chatID] = Date().addingTimeInterval(5)
 
             // 12. Log
             logExchange(

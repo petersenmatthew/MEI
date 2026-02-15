@@ -40,17 +40,32 @@ struct PromptBuilder {
         turns = mergeConsecutiveTurns(turns)
 
         // --- Final user message: the new incoming message to reply to ---
-        // If the last turn is already a "user" turn containing this message (from history),
-        // we don't need to add it again. Otherwise, add it.
-        let lastUserText = turns.last.flatMap { $0.role == "user" ? $0.text : nil }
-        let alreadyIncluded = lastUserText?.contains(message.text) == true
+        // Always send the triggering message as a separate final turn so Gemini
+        // knows exactly which message to reply to. When multiple consecutive
+        // user messages get merged into one turn, the model can't tell which
+        // is the latest — so we split it out explicitly.
 
-        let finalMessage: String
-        if alreadyIncluded {
-            finalMessage = ""
-        } else {
-            finalMessage = message.text
+        // Remove the triggering message text from the last user turn to avoid
+        // sending it twice (once in history, once as the final message).
+        if let lastIndex = turns.indices.last, turns[lastIndex].role == "user" {
+            let cleaned = turns[lastIndex].text
+                .replacingOccurrences(of: message.text, with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleaned.isEmpty {
+                // The triggering message was the only content — remove the turn entirely
+                turns.removeLast()
+            } else {
+                // Keep the remaining history text
+                turns[lastIndex] = .init(role: "user", text: cleaned)
+            }
+            // If the last turn is now "user", Gemini needs alternating roles,
+            // so insert a placeholder model turn before our final user message.
+            if turns.last?.role == "user" {
+                turns.append(.init(role: "model", text: "(no reply yet)"))
+            }
         }
+
+        let finalMessage = message.text
 
         return BuiltPrompt(
             systemInstruction: systemInstruction,
