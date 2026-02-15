@@ -101,7 +101,7 @@ final class AppState {
     }
 
     func contactMode(for contactID: String) -> ContactMode {
-        contacts.first(where: { $0.contactID == contactID })?.mode ?? .active
+        contacts.first(where: { $0.contactID == contactID })?.mode ?? .blacklist
     }
 
     // MARK: - Contact Persistence
