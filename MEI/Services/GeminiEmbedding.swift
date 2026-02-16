@@ -9,8 +9,8 @@ actor GeminiEmbedding {
     }
 
     struct EmbedRequest: Encodable {
-        let model: String
         let content: Content
+        let output_dimensionality: Int?
 
         struct Content: Encodable {
             let parts: [Part]
@@ -43,8 +43,8 @@ actor GeminiEmbedding {
         let url = URL(string: "\(baseURL)/models/\(model):embedContent?key=\(key)")!
 
         let request = EmbedRequest(
-            model: "models/\(model)",
-            content: .init(parts: [.init(text: text)])
+            content: .init(parts: [.init(text: text)]),
+            output_dimensionality: 768
         )
 
         var urlRequest = URLRequest(url: url)
