@@ -155,7 +155,7 @@ struct ContactPickerSheet: View {
                         let normalized = Self.normalizePhoneNumber(labeled.value.stringValue)
                         guard !normalized.isEmpty, !existingIDs.contains(normalized) else { return nil }
                         let label = CNLabeledValue<NSString>.localizedString(forLabel: labeled.label ?? "")
-                        return PhoneNumber(normalized: normalized, formatted: labeled.value.stringValue, label: label)
+                        return PhoneNumber(normalized: normalized   , formatted: labeled.value.stringValue, label: label)
                     }
                     guard !phones.isEmpty else { return }
 

@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 struct LiveFeedView: View {
     @Bindable var appState: AppState
@@ -22,7 +23,7 @@ struct LiveFeedView: View {
 
             Divider()
 
-            if appState.recentExchanges.isEmpty {
+            if appState.pendingReplies.isEmpty && appState.recentExchanges.isEmpty {
                 ContentUnavailableView {
                     Label("No messages yet", systemImage: "bubble.left.and.bubble.right")
                 } description: {
@@ -32,6 +33,9 @@ struct LiveFeedView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 12) {
+                        ForEach(appState.pendingReplies) { pending in
+                            PendingReplyCard(pending: pending)
+                        }
                         ForEach(appState.recentExchanges) { exchange in
                             ExchangeCard(exchange: exchange, appState: appState)
                         }
@@ -40,6 +44,81 @@ struct LiveFeedView: View {
                 }
             }
         }
+    }
+}
+
+struct PendingReplyCard: View {
+    let pending: PendingReply
+    @State private var remainingSeconds: Int = 0
+
+    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Header
+            HStack {
+                Text(pending.contact)
+                    .font(.headline)
+                Spacer()
+                Label(
+                    remainingSeconds > 0 ? "Sending in \(remainingSeconds)s" : "Sending...",
+                    systemImage: "timer"
+                )
+                .font(.caption2.bold())
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.blue.opacity(0.2))
+                .clipShape(Capsule())
+            }
+
+            // Incoming message
+            HStack(alignment: .top) {
+                Text("\(pending.contact):")
+                    .font(.subheadline.bold())
+                Text(pending.incomingText)
+                    .font(.subheadline)
+            }
+
+            // Planned response
+            HStack(alignment: .top) {
+                Text("Will send:")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.blue)
+                Text(pending.generatedText)
+                    .font(.subheadline)
+            }
+
+            // Metadata
+            HStack(spacing: 16) {
+                Label(String(format: "%.2f", pending.confidence), systemImage: "gauge")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                // Countdown progress bar
+                ProgressView(value: progress)
+                    .tint(.blue)
+                    .frame(maxWidth: 120)
+            }
+        }
+        .padding()
+        .background(.blue.opacity(0.05))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(.blue.opacity(0.3), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .onAppear { updateRemaining() }
+        .onReceive(timer) { _ in updateRemaining() }
+    }
+
+    private var progress: Double {
+        let remaining = pending.sendAt.timeIntervalSinceNow
+        guard pending.totalDelay > 0 else { return 1.0 }
+        return min(max(1.0 - remaining / pending.totalDelay, 0), 1.0)
+    }
+
+    private func updateRemaining() {
+        remainingSeconds = max(0, Int(ceil(pending.sendAt.timeIntervalSinceNow)))
     }
 }
 

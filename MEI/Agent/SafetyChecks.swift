@@ -41,7 +41,8 @@ struct SafetyChecks {
         }
 
         // Check if user is actively texting this person (ignore MEI's own sends)
-        if let isActive = try? await messageReader.hasRecentOutgoingMessage(
+        if !appState.alwaysRespond,
+           let isActive = try? await messageReader.hasRecentOutgoingMessage(
             chatIdentifier: message.chatID,
             withinSeconds: 60,
             afterDate: lastMEISendTime

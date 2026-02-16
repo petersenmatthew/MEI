@@ -223,11 +223,28 @@ final class AgentLoop {
                 return
             }
 
-            // 9. Wait for reply delay
+            // 9. Show pending reply in Live Feed with countdown
+            let pendingReply = PendingReply(
+                contact: message.displayName,
+                incomingText: message.text,
+                generatedText: response.messages.joined(separator: " ||| "),
+                confidence: response.confidence,
+                sendAt: Date().addingTimeInterval(delay),
+                totalDelay: delay,
+                chatID: message.chatID
+            )
+            appState.pendingReplies.insert(pendingReply, at: 0)
+
+            defer {
+                appState.pendingReplies.removeAll { $0.id == pendingReply.id }
+            }
+
+            // Wait for reply delay
             try await Task.sleep(for: .seconds(delay))
 
             // 10. Re-check if user started typing during delay (ignore MEI's own sends)
-            if let isActive = try? await messageReader.hasRecentOutgoingMessage(
+            if !appState.alwaysRespond,
+               let isActive = try? await messageReader.hasRecentOutgoingMessage(
                 chatIdentifier: message.chatID,
                 withinSeconds: 60,
                 afterDate: lastMEISendTime[message.chatID]

@@ -41,6 +41,17 @@ struct ContactConfig: Codable, Identifiable, Sendable {
     var customRules: [String]
 }
 
+struct PendingReply: Identifiable {
+    let id = UUID()
+    let contact: String
+    let incomingText: String
+    let generatedText: String
+    let confidence: Double
+    let sendAt: Date          // when the delay expires and message will be sent
+    let totalDelay: Double    // total delay in seconds (for progress calculation)
+    let chatID: String        // to match/remove when done
+}
+
 struct AgentExchange: Identifiable, Sendable {
     let id: Int64
     let timestamp: Date
@@ -76,6 +87,7 @@ final class AppState {
         didSet { saveContacts() }
     }
     var recentExchanges: [AgentExchange] = []
+    var pendingReplies: [PendingReply] = []
 
     init() {
         if UserDefaults.standard.object(forKey: "mei_alwaysRespond") != nil {
