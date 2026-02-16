@@ -61,9 +61,10 @@ struct SafetyChecks {
     /// Check the agent's response before sending.
     static func checkResponse(
         response: AgentResponse,
-        threshold: Double
+        threshold: Double,
+        alwaysRespond: Bool = false
     ) -> SafetyResult {
-        if response.isLowConfidence || response.confidence < threshold {
+        if !alwaysRespond && (response.isLowConfidence || response.confidence < threshold) {
             return .defer(reason: "Low confidence (\(String(format: "%.2f", response.confidence)))")
         }
 

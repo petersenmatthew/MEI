@@ -62,6 +62,9 @@ struct AgentExchange: Identifiable, Sendable {
 final class AppState {
     var mode: AgentMode = .paused
     var confidenceThreshold: Double = 0.2  // TODO: Restore to 0.75 before production
+    var alwaysRespond: Bool = false {
+        didSet { UserDefaults.standard.set(alwaysRespond, forKey: "mei_alwaysRespond") }
+    }
     var sendDelayEnabled: Bool = true
     var sendDelaySeconds: Int = 30
     var killWord: String = ""
@@ -75,6 +78,9 @@ final class AppState {
     var recentExchanges: [AgentExchange] = []
 
     init() {
+        if UserDefaults.standard.object(forKey: "mei_alwaysRespond") != nil {
+            alwaysRespond = UserDefaults.standard.bool(forKey: "mei_alwaysRespond")
+        }
         loadContacts()
     }
 

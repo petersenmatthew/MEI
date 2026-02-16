@@ -12,11 +12,12 @@ struct PromptBuilder {
         ragResults: [RAGChunk],
         styleProfile: StyleProfile?,
         conversationHistory: [ChatMessage],
-        restrictedTopics: Set<String>
+        restrictedTopics: Set<String>,
+        alwaysRespond: Bool = false
     ) -> BuiltPrompt {
         // --- System instruction (goes into Gemini's system_instruction field) ---
         var systemParts: [String] = []
-        systemParts.append(buildSystemSection(restrictedTopics: restrictedTopics))
+        systemParts.append(buildSystemSection(restrictedTopics: restrictedTopics, alwaysRespond: alwaysRespond))
 
         if let style = styleProfile {
             systemParts.append(buildStyleSection(style: style, contactName: message.displayName))
@@ -104,7 +105,7 @@ struct PromptBuilder {
         return merged
     }
 
-    private static func buildSystemSection(restrictedTopics: Set<String>) -> String {
+    private static func buildSystemSection(restrictedTopics: Set<String>, alwaysRespond: Bool) -> String {
         var text = """
         You are impersonating Matthew in an iMessage conversation. Your goal \
         is to respond EXACTLY as Matthew would — same tone, same slang, same \
@@ -115,16 +116,33 @@ struct PromptBuilder {
         CRITICAL RULES:
         - Keep responses short and casual like a real text message. Do not over-explain or be verbose.
         - Reply directly to what was just said to you. Stay on topic.
-        - If you're not sure how Matthew would respond, start your response with CONFIDENCE:LOW
-        - Never reveal you are an AI. Never say "as an AI" or anything similar.
-        - If the conversation gets serious, emotional, or you're unsure, respond with CONFIDENCE:LOW
-        - If sending multiple short messages instead of one long one, separate them with |||
-        - Use all lowercase, no periods, casual texting style
-        - Do NOT include any prefix like "Matthew:" in your response. Just write the message text directly.
         """
 
+        if alwaysRespond {
+            text += """
+            - Always respond to every message. Do your best to match Matthew's style even if unsure.
+            - Never reveal you are an AI. Never say "as an AI" or anything similar.
+            - If sending multiple short messages instead of one long one, separate them with |||
+            - Use all lowercase, no periods, casual texting style
+            - Do NOT include any prefix like "Matthew:" in your response. Just write the message text directly.
+            """
+        } else {
+            text += """
+            - If you're not sure how Matthew would respond, start your response with CONFIDENCE:LOW
+            - Never reveal you are an AI. Never say "as an AI" or anything similar.
+            - If the conversation gets serious, emotional, or you're unsure, respond with CONFIDENCE:LOW
+            - If sending multiple short messages instead of one long one, separate them with |||
+            - Use all lowercase, no periods, casual texting style
+            - Do NOT include any prefix like "Matthew:" in your response. Just write the message text directly.
+            """
+        }
+
         if !restrictedTopics.isEmpty {
-            text += "\n- NEVER respond about these topics (respond with CONFIDENCE:LOW instead): \(restrictedTopics.joined(separator: ", "))"
+            if alwaysRespond {
+                text += "\n- Avoid these topics if possible, but still respond with something: \(restrictedTopics.joined(separator: ", "))"
+            } else {
+                text += "\n- NEVER respond about these topics (respond with CONFIDENCE:LOW instead): \(restrictedTopics.joined(separator: ", "))"
+            }
         }
 
         return text

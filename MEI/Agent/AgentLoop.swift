@@ -146,7 +146,8 @@ final class AgentLoop {
                 ragResults: ragChunks,
                 styleProfile: style,
                 conversationHistory: history,
-                restrictedTopics: appState.restrictedTopics
+                restrictedTopics: appState.restrictedTopics,
+                alwaysRespond: appState.alwaysRespond
             )
 
             // Debug: log the full prompt
@@ -175,7 +176,8 @@ final class AgentLoop {
             // 7. Check response safety
             let responseCheck = SafetyChecks.checkResponse(
                 response: response,
-                threshold: appState.confidenceThreshold
+                threshold: appState.confidenceThreshold,
+                alwaysRespond: appState.alwaysRespond
             )
 
             switch responseCheck {

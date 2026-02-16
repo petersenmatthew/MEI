@@ -28,15 +28,23 @@ struct SettingsView: View {
                         }
 
                         HStack {
-                            Text("Confidence threshold")
+                            Text("Always respond")
                             Spacer()
-                            Slider(value: $appState.confidenceThreshold, in: 0.5...1.0, step: 0.05) {
-                                Text("Threshold")
+                            Toggle("", isOn: $appState.alwaysRespond)
+                        }
+
+                        if !appState.alwaysRespond {
+                            HStack {
+                                Text("Confidence threshold")
+                                Spacer()
+                                Slider(value: $appState.confidenceThreshold, in: 0.5...1.0, step: 0.05) {
+                                    Text("Threshold")
+                                }
+                                .frame(width: 200)
+                                Text(String(format: "%.2f", appState.confidenceThreshold))
+                                    .monospacedDigit()
+                                    .frame(width: 40)
                             }
-                            .frame(width: 200)
-                            Text(String(format: "%.2f", appState.confidenceThreshold))
-                                .monospacedDigit()
-                                .frame(width: 40)
                         }
 
                         HStack {
