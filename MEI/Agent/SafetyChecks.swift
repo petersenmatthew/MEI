@@ -3,11 +3,13 @@ import Foundation
 struct SafetyChecks {
     /// Check if the agent should process this message at all.
     /// `lastMEISendTime` is when MEI last sent to this chat, so we can ignore our own outgoing messages.
+    /// `isTestMessage` bypasses contact-mode and active-hours checks for test injection.
     static func shouldProcess(
         message: ChatMessage,
         appState: AppState,
         messageReader: MessageReader,
-        lastMEISendTime: Date? = nil
+        lastMEISendTime: Date? = nil,
+        isTestMessage: Bool = false
     ) async -> SafetyResult {
         // Skip our own messages
         guard !message.isFromMe else {
@@ -24,30 +26,33 @@ struct SafetyChecks {
             return .skip(reason: "Agent paused or killed")
         }
 
-        // Check active hours
-        guard appState.isWithinActiveHours else {
-            return .skip(reason: "Outside active hours")
-        }
+        // Test messages bypass active hours and contact mode checks
+        if !isTestMessage {
+            // Check active hours
+            guard appState.isWithinActiveHours else {
+                return .skip(reason: "Outside active hours")
+            }
 
-        // Check contact mode
-        let contactMode = appState.contactMode(for: message.contactID)
-        switch contactMode {
-        case .blacklist:
-            return .skip(reason: "Contact blacklisted")
-        case .whitelist:
-            return .skip(reason: "Contact on whitelist but not active")
-        case .active, .shadowOnly:
-            break
-        }
+            // Check contact mode
+            let contactMode = appState.contactMode(for: message.contactID)
+            switch contactMode {
+            case .blacklist:
+                return .skip(reason: "Contact blacklisted")
+            case .whitelist:
+                return .skip(reason: "Contact on whitelist but not active")
+            case .active, .shadowOnly:
+                break
+            }
 
-        // Check if user is actively texting this person (ignore MEI's own sends)
-        if !appState.alwaysRespond,
-           let isActive = try? await messageReader.hasRecentOutgoingMessage(
-            chatIdentifier: message.chatID,
-            withinSeconds: 60,
-            afterDate: lastMEISendTime
-        ), isActive {
-            return .defer(reason: "User is actively texting this contact")
+            // Check if user is actively texting this person (ignore MEI's own sends)
+            if !appState.alwaysRespond,
+               let isActive = try? await messageReader.hasRecentOutgoingMessage(
+                chatIdentifier: message.chatID,
+                withinSeconds: 60,
+                afterDate: lastMEISendTime
+            ), isActive {
+                return .defer(reason: "User is actively texting this contact")
+            }
         }
 
         // Check kill word

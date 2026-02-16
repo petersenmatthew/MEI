@@ -2,6 +2,7 @@ import SwiftUI
 
 struct DashboardView: View {
     @Bindable var appState: AppState
+    let agentLoop: AgentLoop?
 
     var body: some View {
         TabView {
@@ -23,6 +24,11 @@ struct DashboardView: View {
             SettingsView(appState: appState)
                 .tabItem {
                     Label("Settings", systemImage: "gear")
+                }
+
+            TestInjectionView(appState: appState, agentLoop: agentLoop)
+                .tabItem {
+                    Label("Test", systemImage: "hammer.fill")
                 }
         }
         .frame(minWidth: 700, minHeight: 500)

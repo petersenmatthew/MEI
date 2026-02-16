@@ -284,6 +284,7 @@ struct ContactIdentifier: Identifiable {
 struct ContactRow: View {
     let contact: ContactConfig
     @Bindable var appState: AppState
+    @State private var showDeleteConfirmation = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -322,7 +323,24 @@ struct ContactRow: View {
                 }
             }
             .frame(width: 140)
+
+            Button {
+                showDeleteConfirmation = true
+            } label: {
+                Image(systemName: "trash")
+                    .foregroundStyle(.red)
+            }
+            .buttonStyle(.plain)
+            .help("Remove contact")
         }
         .padding(.vertical, 4)
+        .alert("Remove Contact", isPresented: $showDeleteConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Remove", role: .destructive) {
+                appState.contacts.removeAll { $0.id == contact.id }
+            }
+        } message: {
+            Text("Are you sure you want to remove \(contact.displayName) from your contacts list?")
+        }
     }
 }

@@ -23,7 +23,7 @@ struct MEIApp: App {
         .menuBarExtraStyle(.window)
 
         Window("MEI Dashboard", id: "dashboard") {
-            DashboardView(appState: appState)
+            DashboardView(appState: appState, agentLoop: agentLoop)
                 .frame(minWidth: 700, minHeight: 500)
         }
 

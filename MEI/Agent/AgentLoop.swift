@@ -17,6 +17,8 @@ final class AgentLoop {
     /// Tracks when MEI last sent a message to each chat, so we don't
     /// mistake our own replies for "user is actively typing".
     private var lastMEISendTime: [String: Date] = [:]
+    /// Tracks GUIDs of test-injected messages so we skip actual sending.
+    private var testMessageGUIDs: Set<String> = []
 
     init(appState: AppState) {
         self.appState = appState
@@ -62,6 +64,36 @@ final class AgentLoop {
         print("[MEI] Agent loop stopped.")
     }
 
+    // MARK: - Test Injection
+
+    /// Injects a fake message into the full agent pipeline for testing.
+    /// The message runs through safety checks, RAG, style, Gemini, and logging,
+    /// but skips the actual AppleScript send.
+    func injectTestMessage(text: String, contactID: String, contactName: String) async {
+        let guid = "test-\(UUID().uuidString)"
+        let chatID = "iMessage;-;\(contactID)"
+
+        let fakeMessage = ChatMessage(
+            id: Int64(Date().timeIntervalSince1970 * 1000),
+            guid: guid,
+            text: text,
+            isFromMe: false,
+            date: Date(),
+            contactID: contactID,
+            contactName: contactName,
+            chatID: chatID,
+            isGroupChat: false,
+            hasAttachment: false
+        )
+
+        // Mark this GUID as a test message so we skip actual send
+        testMessageGUIDs.insert(guid)
+        defer { testMessageGUIDs.remove(guid) }
+
+        print("[MEI] ── Injecting test message from \(contactName): \"\(text.prefix(50))\"")
+        await processMessage(fakeMessage, isTestMessage: true)
+    }
+
     private func startPolling() {
         pollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
@@ -93,7 +125,7 @@ final class AgentLoop {
         }
     }
 
-    private func processMessage(_ message: ChatMessage) async {
+    private func processMessage(_ message: ChatMessage, isTestMessage: Bool = false) async {
         print("[MEI] ── Processing message from \(message.displayName): \"\(message.text.prefix(50))\"")
 
         // 1. Safety checks
@@ -101,7 +133,8 @@ final class AgentLoop {
             message: message,
             appState: appState,
             messageReader: messageReader,
-            lastMEISendTime: lastMEISendTime[message.chatID]
+            lastMEISendTime: lastMEISendTime[message.chatID],
+            isTestMessage: isTestMessage
         )
 
         switch safety {
@@ -280,33 +313,44 @@ final class AgentLoop {
 
             print("[MEI] Delay complete, sending response...")
 
-            // 11. Send messages
-            for (index, msgText) in response.messages.enumerated() {
-                print("[MEI] Sending message \(index + 1)/\(response.messages.count): \"\(msgText.prefix(50))\"")
-                try await messageSender.sendToChat(msgText, chatIdentifier: message.chatID)
-
-                if index < response.messages.count - 1 {
-                    let burstDelay = BehaviorEngine.burstDelay()
-                    try await Task.sleep(for: .seconds(burstDelay))
+            // 11. Send messages (skip actual send for test messages)
+            if isTestMessage {
+                print("[MEI] TEST MODE: skipping actual send, would have sent \(response.messages.count) message(s)")
+                for (index, msgText) in response.messages.enumerated() {
+                    print("[MEI] TEST: message \(index + 1)/\(response.messages.count): \"\(msgText.prefix(50))\"")
                 }
-            }
+            } else {
+                for (index, msgText) in response.messages.enumerated() {
+                    print("[MEI] Sending message \(index + 1)/\(response.messages.count): \"\(msgText.prefix(50))\"")
+                    try await messageSender.sendToChat(msgText, chatIdentifier: message.chatID)
 
-            // Record that MEI just sent to this chat.
-            // Add a buffer to account for the delay between our send call
-            // and the message actually appearing in chat.db with its timestamp.
-            lastMEISendTime[message.chatID] = Date().addingTimeInterval(5)
+                    if index < response.messages.count - 1 {
+                        let burstDelay = BehaviorEngine.burstDelay()
+                        try await Task.sleep(for: .seconds(burstDelay))
+                    }
+                }
+
+                // Record that MEI just sent to this chat.
+                // Add a buffer to account for the delay between our send call
+                // and the message actually appearing in chat.db with its timestamp.
+                lastMEISendTime[message.chatID] = Date().addingTimeInterval(5)
+            }
 
             // 12. Log
             logExchange(
                 message: message,
                 response: response,
-                wasSent: true,
+                wasSent: !isTestMessage,
                 wasShadow: false,
                 delay: delay,
                 ragChunks: ragChunks.map(\.id)
             )
-            appState.todayMessagesSent += 1
-            print("[MEI] Sent to \(message.displayName): \(response.messages.joined(separator: " ||| "))")
+            if isTestMessage {
+                print("[MEI] TEST to \(message.displayName): \(response.messages.joined(separator: " ||| "))")
+            } else {
+                appState.todayMessagesSent += 1
+                print("[MEI] Sent to \(message.displayName): \(response.messages.joined(separator: " ||| "))")
+            }
 
         } catch {
             print("[MEI] Error processing message from \(message.displayName): \(error)")
