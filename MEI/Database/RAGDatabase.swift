@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import Accelerate
 
 final class RAGDatabase: @unchecked Sendable {
     private var db: OpaquePointer?

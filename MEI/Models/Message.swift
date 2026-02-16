@@ -12,7 +12,10 @@ struct ChatMessage: Identifiable, Sendable {
     let isGroupChat: Bool
     let hasAttachment: Bool
 
+    /// Display name for UI. Uses contact name from chat if non-empty; otherwise contactID (phone/email).
     var displayName: String {
-        contactName ?? contactID
+        guard let raw = contactName else { return contactID }
+        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? contactID : name
     }
 }

@@ -225,7 +225,7 @@ final class AgentLoop {
 
             // 9. Show pending reply in Live Feed with countdown
             let pendingReply = PendingReply(
-                contact: message.displayName,
+                contact: resolveDisplayName(for: message),
                 incomingText: message.text,
                 generatedText: response.messages.joined(separator: " ||| "),
                 confidence: response.confidence,
@@ -294,6 +294,15 @@ final class AgentLoop {
 
     // MARK: - Helpers
 
+    /// Display name for Live Feed: prefer configured contact name from app state, else message display name (or contactID).
+    private func resolveDisplayName(for message: ChatMessage) -> String {
+        if let config = appState.contacts.first(where: { $0.contactID == message.contactID }) {
+            let name = config.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty { return name }
+        }
+        return message.displayName
+    }
+
     private func loadStyleProfile(for contactID: String) -> StyleProfile? {
         let supportDir = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
@@ -343,7 +352,7 @@ final class AgentLoop {
         let exchange = AgentExchange(
             id: Int64(Date().timeIntervalSince1970 * 1000),
             timestamp: Date(),
-            contact: message.displayName,
+            contact: resolveDisplayName(for: message),
             incomingText: message.text,
             generatedText: response.messages.joined(separator: " ||| "),
             confidence: response.confidence,
