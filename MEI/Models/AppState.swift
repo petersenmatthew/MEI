@@ -72,17 +72,47 @@ struct AgentExchange: Identifiable, Sendable {
 @MainActor
 @Observable
 final class AppState {
-    var mode: AgentMode = .paused
-    var confidenceThreshold: Double = 0.2  // TODO: Restore to 0.75 before production
-    var alwaysRespond: Bool = false {
-        didSet { UserDefaults.standard.set(alwaysRespond, forKey: "mei_alwaysRespond") }
+    // MARK: - UserDefaults Keys
+    private enum Keys {
+        static let mode = "mei_mode"
+        static let confidenceThreshold = "mei_confidenceThreshold"
+        static let alwaysRespond = "mei_alwaysRespond"
+        static let sendDelayEnabled = "mei_sendDelayEnabled"
+        static let sendDelaySeconds = "mei_sendDelaySeconds"
+        static let killWord = "mei_killWord"
+        static let activeHoursEnabled = "mei_activeHoursEnabled"
+        static let activeHoursStart = "mei_activeHoursStart"
+        static let activeHoursEnd = "mei_activeHoursEnd"
+        static let restrictedTopics = "mei_restrictedTopics"
     }
-    var sendDelayEnabled: Bool = true
-    var sendDelaySeconds: Int = 30
-    var killWord: String = ""
-    var activeHoursEnabled: Bool = true
-    var activeHoursStart: Int = 8   // 8 AM
-    var activeHoursEnd: Int = 23    // 11 PM
+
+    var mode: AgentMode = .paused {
+        didSet { UserDefaults.standard.set(mode.rawValue, forKey: Keys.mode) }
+    }
+    var confidenceThreshold: Double = 0.2 {  // TODO: Restore to 0.75 before production
+        didSet { UserDefaults.standard.set(confidenceThreshold, forKey: Keys.confidenceThreshold) }
+    }
+    var alwaysRespond: Bool = false {
+        didSet { UserDefaults.standard.set(alwaysRespond, forKey: Keys.alwaysRespond) }
+    }
+    var sendDelayEnabled: Bool = true {
+        didSet { UserDefaults.standard.set(sendDelayEnabled, forKey: Keys.sendDelayEnabled) }
+    }
+    var sendDelaySeconds: Int = 30 {
+        didSet { UserDefaults.standard.set(sendDelaySeconds, forKey: Keys.sendDelaySeconds) }
+    }
+    var killWord: String = "" {
+        didSet { UserDefaults.standard.set(killWord, forKey: Keys.killWord) }
+    }
+    var activeHoursEnabled: Bool = true {
+        didSet { UserDefaults.standard.set(activeHoursEnabled, forKey: Keys.activeHoursEnabled) }
+    }
+    var activeHoursStart: Int = 8 {   // 8 AM
+        didSet { UserDefaults.standard.set(activeHoursStart, forKey: Keys.activeHoursStart) }
+    }
+    var activeHoursEnd: Int = 23 {    // 11 PM
+        didSet { UserDefaults.standard.set(activeHoursEnd, forKey: Keys.activeHoursEnd) }
+    }
 
     var contacts: [ContactConfig] = [] {
         didSet { saveContacts() }
@@ -91,10 +121,54 @@ final class AppState {
     var pendingReplies: [PendingReply] = []
 
     init() {
-        if UserDefaults.standard.object(forKey: "mei_alwaysRespond") != nil {
-            alwaysRespond = UserDefaults.standard.bool(forKey: "mei_alwaysRespond")
-        }
+        loadSettings()
         loadContacts()
+    }
+
+    private func loadSettings() {
+        let defaults = UserDefaults.standard
+
+        if let modeString = defaults.string(forKey: Keys.mode),
+           let savedMode = AgentMode(rawValue: modeString) {
+            // Don't restore "killed" mode - start paused instead
+            mode = savedMode == .killed ? .paused : savedMode
+        }
+
+        if defaults.object(forKey: Keys.confidenceThreshold) != nil {
+            confidenceThreshold = defaults.double(forKey: Keys.confidenceThreshold)
+        }
+
+        if defaults.object(forKey: Keys.alwaysRespond) != nil {
+            alwaysRespond = defaults.bool(forKey: Keys.alwaysRespond)
+        }
+
+        if defaults.object(forKey: Keys.sendDelayEnabled) != nil {
+            sendDelayEnabled = defaults.bool(forKey: Keys.sendDelayEnabled)
+        }
+
+        if defaults.object(forKey: Keys.sendDelaySeconds) != nil {
+            sendDelaySeconds = defaults.integer(forKey: Keys.sendDelaySeconds)
+        }
+
+        if let savedKillWord = defaults.string(forKey: Keys.killWord) {
+            killWord = savedKillWord
+        }
+
+        if defaults.object(forKey: Keys.activeHoursEnabled) != nil {
+            activeHoursEnabled = defaults.bool(forKey: Keys.activeHoursEnabled)
+        }
+
+        if defaults.object(forKey: Keys.activeHoursStart) != nil {
+            activeHoursStart = defaults.integer(forKey: Keys.activeHoursStart)
+        }
+
+        if defaults.object(forKey: Keys.activeHoursEnd) != nil {
+            activeHoursEnd = defaults.integer(forKey: Keys.activeHoursEnd)
+        }
+
+        if let savedTopics = defaults.array(forKey: Keys.restrictedTopics) as? [String] {
+            restrictedTopics = Set(savedTopics)
+        }
     }
 
     // Stats
@@ -109,7 +183,9 @@ final class AppState {
         "Financial details",
         "Relationship drama",
         "Health/medical"
-    ]
+    ] {
+        didSet { UserDefaults.standard.set(Array(restrictedTopics), forKey: Keys.restrictedTopics) }
+    }
 
     var isWithinActiveHours: Bool {
         guard activeHoursEnabled else { return true }
