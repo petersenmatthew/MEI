@@ -6,13 +6,25 @@ struct ContactsView: View {
     @State private var searchText = ""
     @State private var showAddContact = false
 
-    var filteredContacts: [ContactConfig] {
+    /// Groups contacts by display name into grouped entries
+    var groupedContacts: [GroupedContact] {
+        let groups = Dictionary(grouping: appState.contacts) { $0.displayName }
+        return groups.map { name, configs in
+            GroupedContact(
+                displayName: name,
+                configs: configs,
+                thumbnailData: configs.first?.thumbnailData
+            )
+        }.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    }
+
+    var filteredGroupedContacts: [GroupedContact] {
         if searchText.isEmpty {
-            return appState.contacts
+            return groupedContacts
         }
-        return appState.contacts.filter {
-            $0.displayName.localizedCaseInsensitiveContains(searchText) ||
-            $0.contactID.localizedCaseInsensitiveContains(searchText)
+        return groupedContacts.filter { group in
+            group.displayName.localizedCaseInsensitiveContains(searchText) ||
+            group.configs.contains { $0.contactID.localizedCaseInsensitiveContains(searchText) }
         }
     }
 
@@ -41,8 +53,8 @@ struct ContactsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
-                    ForEach(filteredContacts) { contact in
-                        ContactRow(contact: contact, appState: appState)
+                    ForEach(filteredGroupedContacts) { group in
+                        GroupedContactRow(group: group, appState: appState)
                     }
                 }
                 .searchable(text: $searchText, prompt: "Search contacts...")
@@ -50,6 +62,180 @@ struct ContactsView: View {
         }
         .sheet(isPresented: $showAddContact) {
             ContactPickerSheet(appState: appState, isPresented: $showAddContact)
+        }
+    }
+}
+
+// MARK: - Grouped Contact Model
+
+struct GroupedContact: Identifiable {
+    var id: String { displayName }
+    let displayName: String
+    var configs: [ContactConfig]
+    let thumbnailData: Data?
+}
+
+// MARK: - Grouped Contact Row
+
+struct GroupedContactRow: View {
+    let group: GroupedContact
+    @Bindable var appState: AppState
+    @State private var isExpanded = false
+    @State private var showDeleteConfirmation = false
+
+    private var hasMultipleIdentifiers: Bool {
+        group.configs.count > 1
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Main row
+            HStack(spacing: 10) {
+                // Expand/collapse button (only if multiple identifiers)
+                if hasMultipleIdentifiers {
+                    Button {
+                        isExpanded.toggle()
+                    } label: {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Spacer().frame(width: 16)
+                }
+
+                // Avatar
+                contactAvatar
+
+                // Name and identifier summary
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(group.displayName)
+                        .font(.headline)
+                    if hasMultipleIdentifiers {
+                        Text("\(group.configs.count) identifiers")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if let first = group.configs.first {
+                        Text(first.contactID)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer()
+
+                // Mode picker (applies to all identifiers for this contact)
+                if let firstConfig = group.configs.first {
+                    Picker("", selection: Binding(
+                        get: { firstConfig.mode },
+                        set: { newMode in
+                            // Update all configs for this contact
+                            for config in group.configs {
+                                if let idx = appState.contacts.firstIndex(where: { $0.id == config.id }) {
+                                    appState.contacts[idx].mode = newMode
+                                }
+                            }
+                        }
+                    )) {
+                        ForEach(ContactMode.allCases, id: \.self) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .frame(width: 140)
+                }
+
+                Button {
+                    showDeleteConfirmation = true
+                } label: {
+                    Image(systemName: "trash")
+                        .foregroundStyle(.red)
+                }
+                .buttonStyle(.plain)
+                .help("Remove contact")
+            }
+            .padding(.vertical, 4)
+
+            // Expanded identifiers list (no animation)
+            if isExpanded && hasMultipleIdentifiers {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(group.configs) { config in
+                        IdentifierRow(config: config, appState: appState)
+                    }
+                }
+                .padding(.leading, 58)
+                .padding(.top, 4)
+                .padding(.bottom, 8)
+            }
+        }
+        .alert("Remove Contact", isPresented: $showDeleteConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Remove", role: .destructive) {
+                // Remove all configs for this contact
+                for config in group.configs {
+                    appState.contacts.removeAll { $0.id == config.id }
+                }
+            }
+        } message: {
+            Text("Are you sure you want to remove \(group.displayName) and all their identifiers from your contacts list?")
+        }
+    }
+
+    @ViewBuilder
+    private var contactAvatar: some View {
+        if let data = group.thumbnailData, let nsImage = NSImage(data: data) {
+            Image(nsImage: nsImage)
+                .resizable()
+                .frame(width: 32, height: 32)
+                .clipShape(Circle())
+        } else {
+            Image(systemName: "person.circle.fill")
+                .resizable()
+                .frame(width: 32, height: 32)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+// MARK: - Individual Identifier Row (shown when expanded)
+
+struct IdentifierRow: View {
+    let config: ContactConfig
+    @Bindable var appState: AppState
+    @State private var showDeleteConfirmation = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: config.contactID.contains("@") ? "envelope" : "phone")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+
+            Text(config.contactID)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            Button {
+                showDeleteConfirmation = true
+            } label: {
+                Image(systemName: "xmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Remove this identifier")
+        }
+        .padding(.vertical, 2)
+        .alert("Remove Identifier", isPresented: $showDeleteConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Remove", role: .destructive) {
+                appState.contacts.removeAll { $0.id == config.id }
+            }
+        } message: {
+            Text("Remove \(config.contactID) from this contact?")
         }
     }
 }
@@ -279,68 +465,3 @@ struct ContactIdentifier: Identifiable {
     let label: String
 }
 
-// MARK: - Contact Row (existing)
-
-struct ContactRow: View {
-    let contact: ContactConfig
-    @Bindable var appState: AppState
-    @State private var showDeleteConfirmation = false
-
-    var body: some View {
-        HStack(spacing: 10) {
-            if let data = contact.thumbnailData, let nsImage = NSImage(data: data) {
-                Image(nsImage: nsImage)
-                    .resizable()
-                    .frame(width: 32, height: 32)
-                    .clipShape(Circle())
-            } else {
-                Image(systemName: "person.circle.fill")
-                    .resizable()
-                    .frame(width: 32, height: 32)
-                    .foregroundStyle(.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(contact.displayName)
-                    .font(.headline)
-                Text(contact.contactID)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            Picker("", selection: Binding(
-                get: { contact.mode },
-                set: { newMode in
-                    if let idx = appState.contacts.firstIndex(where: { $0.id == contact.id }) {
-                        appState.contacts[idx].mode = newMode
-                    }
-                }
-            )) {
-                ForEach(ContactMode.allCases, id: \.self) { mode in
-                    Text(mode.rawValue).tag(mode)
-                }
-            }
-            .frame(width: 140)
-
-            Button {
-                showDeleteConfirmation = true
-            } label: {
-                Image(systemName: "trash")
-                    .foregroundStyle(.red)
-            }
-            .buttonStyle(.plain)
-            .help("Remove contact")
-        }
-        .padding(.vertical, 4)
-        .alert("Remove Contact", isPresented: $showDeleteConfirmation) {
-            Button("Cancel", role: .cancel) {}
-            Button("Remove", role: .destructive) {
-                appState.contacts.removeAll { $0.id == contact.id }
-            }
-        } message: {
-            Text("Are you sure you want to remove \(contact.displayName) from your contacts list?")
-        }
-    }
-}
