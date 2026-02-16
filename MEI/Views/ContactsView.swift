@@ -60,22 +60,22 @@ struct ContactPickerSheet: View {
     @Bindable var appState: AppState
     @Binding var isPresented: Bool
     @State private var searchText = ""
-    @State private var phoneContacts: [PhoneContact] = []
+    @State private var pickerContacts: [PickerContact] = []
     @State private var accessDenied = false
     @State private var loading = true
 
-    var filteredPhoneContacts: [PhoneContact] {
-        if searchText.isEmpty { return phoneContacts }
-        return phoneContacts.filter {
+    var filteredContacts: [PickerContact] {
+        if searchText.isEmpty { return pickerContacts }
+        return pickerContacts.filter {
             $0.name.localizedCaseInsensitiveContains(searchText) ||
-            $0.phoneNumbers.contains { $0.formatted.localizedCaseInsensitiveContains(searchText) }
+            $0.identifiers.contains { $0.formatted.localizedCaseInsensitiveContains(searchText) }
         }
     }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Add from Contacts")
+                Text("Add Contact")
                     .font(.headline)
                 Spacer()
                 Button("Done") { isPresented = false }
@@ -94,11 +94,11 @@ struct ContactPickerSheet: View {
                 Spacer()
                 ProgressView("Loading contacts...")
                 Spacer()
-            } else if phoneContacts.isEmpty {
+            } else if pickerContacts.isEmpty {
                 ContentUnavailableView {
                     Label("No Contacts", systemImage: "person.crop.circle")
                 } description: {
-                    Text("No contacts with phone numbers found.")
+                    Text("No contacts found.")
                 }
             } else {
                 TextField("Search contacts...", text: $searchText)
@@ -106,9 +106,9 @@ struct ContactPickerSheet: View {
                     .padding(.horizontal)
                     .padding(.vertical, 8)
 
-                List(filteredPhoneContacts) { contact in
-                    ContactPickerRow(contact: contact) { selectedNumber in
-                        addContact(name: contact.name, phoneNumber: selectedNumber)
+                List(filteredContacts) { contact in
+                    ContactPickerRow(contact: contact) {
+                        addAllIdentifiers(for: contact)
                     }
                 }
             }
@@ -141,31 +141,44 @@ struct ContactPickerSheet: View {
             CNContactGivenNameKey as CNKeyDescriptor,
             CNContactFamilyNameKey as CNKeyDescriptor,
             CNContactPhoneNumbersKey as CNKeyDescriptor,
+            CNContactEmailAddressesKey as CNKeyDescriptor,
             CNContactThumbnailImageDataKey as CNKeyDescriptor,
         ]
 
         let results = await Task.detached(priority: .userInitiated) {
-            var contacts: [PhoneContact] = []
+            var contacts: [PickerContact] = []
             let request = CNContactFetchRequest(keysToFetch: keysToFetch)
             request.sortOrder = .givenName
 
             do {
                 try store.enumerateContacts(with: request) { cnContact, _ in
-                    let phones = cnContact.phoneNumbers.compactMap { labeled -> PhoneNumber? in
+                    var identifiers: [ContactIdentifier] = []
+
+                    // Phone numbers
+                    for labeled in cnContact.phoneNumbers {
                         let normalized = Self.normalizePhoneNumber(labeled.value.stringValue)
-                        guard !normalized.isEmpty, !existingIDs.contains(normalized) else { return nil }
+                        guard !normalized.isEmpty, !existingIDs.contains(normalized) else { continue }
                         let label = CNLabeledValue<NSString>.localizedString(forLabel: labeled.label ?? "")
-                        return PhoneNumber(normalized: normalized   , formatted: labeled.value.stringValue, label: label)
+                        identifiers.append(ContactIdentifier(normalized: normalized, formatted: labeled.value.stringValue, label: label))
                     }
-                    guard !phones.isEmpty else { return }
+
+                    // Email addresses
+                    for labeled in cnContact.emailAddresses {
+                        let email = (labeled.value as String).lowercased()
+                        guard !email.isEmpty, !existingIDs.contains(email) else { continue }
+                        let label = CNLabeledValue<NSString>.localizedString(forLabel: labeled.label ?? "")
+                        identifiers.append(ContactIdentifier(normalized: email, formatted: email, label: label.isEmpty ? "email" : label))
+                    }
+
+                    guard !identifiers.isEmpty else { return }
 
                     let name = [cnContact.givenName, cnContact.familyName]
                         .filter { !$0.isEmpty }
                         .joined(separator: " ")
 
-                    contacts.append(PhoneContact(
+                    contacts.append(PickerContact(
                         name: name.isEmpty ? "Unknown" : name,
-                        phoneNumbers: phones,
+                        identifiers: identifiers,
                         thumbnailData: cnContact.thumbnailImageData
                     ))
                 }
@@ -176,24 +189,24 @@ struct ContactPickerSheet: View {
             return contacts
         }.value
 
-        phoneContacts = results
+        pickerContacts = results
         loading = false
     }
 
-    private func addContact(name: String, phoneNumber: String) {
-        let config = ContactConfig(
-            contactID: phoneNumber,
-            displayName: name,
-            mode: .active,
-            customRules: []
-        )
-        appState.contacts.append(config)
-
-        // Remove the number from the picker list so it can't be added again
-        for i in phoneContacts.indices {
-            phoneContacts[i].phoneNumbers.removeAll { $0.normalized == phoneNumber }
+    private func addAllIdentifiers(for contact: PickerContact) {
+        for identifier in contact.identifiers {
+            let config = ContactConfig(
+                contactID: identifier.normalized,
+                displayName: contact.name,
+                mode: .active,
+                customRules: [],
+                thumbnailData: contact.thumbnailData
+            )
+            appState.contacts.append(config)
         }
-        phoneContacts.removeAll { $0.phoneNumbers.isEmpty }
+
+        // Remove the contact from the picker list
+        pickerContacts.removeAll { $0.id == contact.id }
     }
 
     static func normalizePhoneNumber(_ raw: String) -> String {
@@ -209,57 +222,29 @@ struct ContactPickerSheet: View {
 // MARK: - Contact Picker Row
 
 struct ContactPickerRow: View {
-    let contact: PhoneContact
-    let onSelect: (String) -> Void
+    let contact: PickerContact
+    let onSelect: () -> Void
 
     var body: some View {
-        if contact.phoneNumbers.count == 1, let phone = contact.phoneNumbers.first {
-            Button {
-                onSelect(phone.normalized)
-            } label: {
-                HStack(spacing: 10) {
-                    contactAvatar
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(contact.name).font(.headline)
-                        Text(phone.formatted)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "plus.circle")
-                        .foregroundStyle(.blue)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        } else {
-            DisclosureGroup {
-                ForEach(contact.phoneNumbers) { phone in
-                    Button {
-                        onSelect(phone.normalized)
-                    } label: {
-                        HStack {
-                            Text(phone.label)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 60, alignment: .leading)
-                            Text(phone.formatted)
-                                .font(.body)
-                            Spacer()
-                            Image(systemName: "plus.circle")
-                                .foregroundStyle(.blue)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            } label: {
-                HStack(spacing: 10) {
-                    contactAvatar
+        Button {
+            onSelect()
+        } label: {
+            HStack(spacing: 10) {
+                contactAvatar
+                VStack(alignment: .leading, spacing: 2) {
                     Text(contact.name).font(.headline)
+                    Text(contact.identifiers.map(\.formatted).joined(separator: ", "))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
+                Spacer()
+                Image(systemName: "plus.circle")
+                    .foregroundStyle(.blue)
             }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
@@ -280,14 +265,14 @@ struct ContactPickerRow: View {
 
 // MARK: - Models
 
-struct PhoneContact: Identifiable {
+struct PickerContact: Identifiable {
     let id = UUID()
     let name: String
-    var phoneNumbers: [PhoneNumber]
+    var identifiers: [ContactIdentifier]
     let thumbnailData: Data?
 }
 
-struct PhoneNumber: Identifiable {
+struct ContactIdentifier: Identifiable {
     let id = UUID()
     let normalized: String
     let formatted: String
@@ -301,7 +286,19 @@ struct ContactRow: View {
     @Bindable var appState: AppState
 
     var body: some View {
-        HStack {
+        HStack(spacing: 10) {
+            if let data = contact.thumbnailData, let nsImage = NSImage(data: data) {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .frame(width: 32, height: 32)
+                    .clipShape(Circle())
+            } else {
+                Image(systemName: "person.circle.fill")
+                    .resizable()
+                    .frame(width: 32, height: 32)
+                    .foregroundStyle(.secondary)
+            }
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(contact.displayName)
                     .font(.headline)

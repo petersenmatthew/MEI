@@ -39,6 +39,7 @@ struct ContactConfig: Codable, Identifiable, Sendable {
     var displayName: String
     var mode: ContactMode
     var customRules: [String]
+    var thumbnailData: Data?
 }
 
 struct PendingReply: Identifiable {
