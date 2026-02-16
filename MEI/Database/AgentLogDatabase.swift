@@ -122,6 +122,33 @@ final class AgentLogDatabase: @unchecked Sendable {
         return nil
     }
 
+    /// Fetch the highest-confidence successfully-sent exchanges for a contact,
+    /// used as few-shot examples in the prompt to steer style.
+    func fetchBestExchanges(contact: String, limit: Int = 3) -> [(incoming: String, generated: String, confidence: Double)] {
+        guard let db = db else { return [] }
+        let sql = """
+            SELECT incoming_text, generated_text, confidence
+            FROM agent_log
+            WHERE contact = ? AND was_sent = 1 AND confidence >= 0.7
+            ORDER BY confidence DESC, timestamp DESC
+            LIMIT ?
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, (contact as NSString).utf8String, -1, nil)
+        sqlite3_bind_int(stmt, 2, Int32(limit))
+
+        var results: [(incoming: String, generated: String, confidence: Double)] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let incoming = sqlite3_column_text(stmt, 0),
+                  let generated = sqlite3_column_text(stmt, 1) else { continue }
+            let conf = sqlite3_column_double(stmt, 2)
+            results.append((String(cString: incoming), String(cString: generated), conf))
+        }
+        return results
+    }
+
     func fetchStats(since: Date) -> (sent: Int, deferred: Int, shadow: Int, avgConfidence: Double) {
         guard let db = db else { return (0, 0, 0, 0) }
         let ts = ISO8601DateFormatter().string(from: since)

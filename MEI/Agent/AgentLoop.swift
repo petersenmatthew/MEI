@@ -13,6 +13,7 @@ final class AgentLoop {
 
     private var pollTimer: Timer?
     private var isProcessing = false
+    private var incrementalEmbedder: IncrementalEmbedder?
     /// Tracks when MEI last sent a message to each chat, so we don't
     /// mistake our own replies for "user is actively typing".
     private var lastMEISendTime: [String: Date] = [:]
@@ -38,6 +39,14 @@ final class AgentLoop {
             try ragDatabase.open()
             try agentLog.open()
 
+            // Start incremental embedding to keep RAG database fresh
+            incrementalEmbedder = IncrementalEmbedder(
+                messageReader: messageReader,
+                ragDatabase: ragDatabase,
+                agentLog: agentLog
+            )
+            incrementalEmbedder?.startPeriodicUpdates(intervalHours: 4)
+
             startPolling()
             print("[MEI] Agent loop started. Polling every 2 seconds.")
         } catch {
@@ -48,6 +57,8 @@ final class AgentLoop {
     func stop() {
         pollTimer?.invalidate()
         pollTimer = nil
+        incrementalEmbedder?.stop()
+        incrementalEmbedder = nil
         print("[MEI] Agent loop stopped.")
     }
 
@@ -116,10 +127,30 @@ final class AgentLoop {
             appState.contactMode(for: message.contactID) == .shadowOnly
 
         do {
-            // 2. Embed incoming message for RAG search
+            // 2. Load style profile
+            let style = loadStyleProfile(for: message.contactID)
+            print("[MEI] Style profile: \(style != nil ? "loaded" : "none")")
+
+            // 3. Get conversation history
+            let history = try await messageReader.fetchRecentMessages(
+                chatIdentifier: message.chatID,
+                limit: 20
+            )
+            print("[MEI] Conversation history: \(history.count) messages")
+
+            // 4. Embed incoming message for RAG search
+            // For short messages, prepend recent conversation context to produce
+            // a better embedding (e.g., "lol" alone is meaningless to embed)
             var ragChunks: [RAGChunk] = []
             do {
-                let embedding = try await geminiEmbedding.embed(text: message.text)
+                let queryText: String
+                if message.text.count < 15 {
+                    let recentContext = history.suffix(3).map(\.text).joined(separator: " ")
+                    queryText = "\(recentContext) \(message.text)"
+                } else {
+                    queryText = message.text
+                }
+                let embedding = try await geminiEmbedding.embed(text: queryText)
                 ragChunks = try ragDatabase.searchSimilar(
                     embedding: embedding,
                     contact: message.contactID,
@@ -129,25 +160,19 @@ final class AgentLoop {
                 print("[MEI] RAG search failed (continuing without): \(error)")
             }
 
-            // 3. Load style profile
-            let style = loadStyleProfile(for: message.contactID)
-            print("[MEI] Style profile: \(style != nil ? "loaded" : "none")")
+            // 5. Fetch few-shot examples from past successful exchanges
+            let contactDisplayName = resolveDisplayName(for: message)
+            let fewShotExamples = agentLog.fetchBestExchanges(contact: contactDisplayName, limit: 3)
 
-            // 4. Get conversation history
-            let history = try await messageReader.fetchRecentMessages(
-                chatIdentifier: message.chatID,
-                limit: 20
-            )
-            print("[MEI] Conversation history: \(history.count) messages")
-
-            // 5. Build prompt
+            // 6. Build prompt
             let builtPrompt = PromptBuilder.build(
                 message: message,
                 ragResults: ragChunks,
                 styleProfile: style,
                 conversationHistory: history,
                 restrictedTopics: appState.restrictedTopics,
-                alwaysRespond: appState.alwaysRespond
+                alwaysRespond: appState.alwaysRespond,
+                fewShotExamples: fewShotExamples
             )
 
             // Debug: log the full prompt

@@ -11,7 +11,18 @@ struct AgentResponse: Sendable {
         var confidence: Double = 0.9
         var isLow = false
 
-        if text.hasPrefix("CONFIDENCE:LOW") {
+        // Parse structured confidence: "CONF:0.85\nmessage text"
+        if let match = text.range(of: #"^CONF:(\d+\.?\d*)"#, options: .regularExpression) {
+            let numStr = String(text[match]).dropFirst(5) // drop "CONF:"
+            if let parsed = Double(numStr) {
+                confidence = min(1.0, max(0.0, parsed))
+            }
+            text = String(text[match.upperBound...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            isLow = confidence < 0.5
+        }
+        // Backward compatibility: legacy CONFIDENCE:LOW prefix
+        else if text.hasPrefix("CONFIDENCE:LOW") {
             isLow = true
             confidence = 0.3
             text = text.replacingOccurrences(of: "CONFIDENCE:LOW", with: "")

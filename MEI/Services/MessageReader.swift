@@ -206,6 +206,70 @@ actor MessageReader {
         return 0
     }
 
+    /// Fetch all 1-on-1 messages since a given ROWID, grouped by contact.
+    /// Used by IncrementalEmbedder to find new messages to embed.
+    func fetchMessagesSince(rowID: Int64, limit: Int = 500) throws -> [String: [ChatMessage]] {
+        guard let db = db else { throw MessageReaderError.notOpen }
+
+        let query = """
+            SELECT
+                m.ROWID, m.guid, m.text, m.is_from_me, m.date,
+                m.attributedBody, m.cache_has_attachments,
+                c.chat_identifier, c.display_name, c.style
+            FROM message m
+            JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
+            JOIN chat c ON cmj.chat_id = c.ROWID
+            WHERE m.ROWID > ? AND c.style = 45
+            ORDER BY m.date ASC
+            LIMIT ?
+        """
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, query, -1, &stmt, nil) == SQLITE_OK else {
+            throw MessageReaderError.queryFailed(message: String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        sqlite3_bind_int64(stmt, 1, rowID)
+        sqlite3_bind_int(stmt, 2, Int32(limit))
+
+        var grouped: [String: [ChatMessage]] = [:]
+
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let msgRowID = sqlite3_column_int64(stmt, 0)
+            let guid = columnText(stmt, index: 1) ?? ""
+            var text = columnText(stmt, index: 2)
+            if text == nil || text?.isEmpty == true {
+                text = extractTextFromAttributedBody(stmt, index: 5)
+            }
+            guard let messageText = text, !messageText.isEmpty else { continue }
+
+            let isFromMe = sqlite3_column_int(stmt, 3) == 1
+            let dateValue = sqlite3_column_int64(stmt, 4)
+            let hasAttachment = sqlite3_column_int(stmt, 6) == 1
+            let chatIdentifier = columnText(stmt, index: 7) ?? ""
+            let displayName = columnText(stmt, index: 8)
+            let chatStyle = sqlite3_column_int(stmt, 9)
+            let contactID = extractContactID(from: chatIdentifier)
+
+            let msg = ChatMessage(
+                id: msgRowID,
+                guid: guid,
+                text: messageText,
+                isFromMe: isFromMe,
+                date: dateFromChatDB(dateValue),
+                contactID: contactID,
+                contactName: displayName,
+                chatID: chatIdentifier,
+                isGroupChat: chatStyle == 43,
+                hasAttachment: hasAttachment
+            )
+            grouped[contactID, default: []].append(msg)
+        }
+
+        return grouped
+    }
+
     /// Check if the real user (not MEI) has sent an outgoing message recently.
     /// `afterDate` allows filtering out MEI's own sends — only counts outgoing messages after that date.
     func hasRecentOutgoingMessage(

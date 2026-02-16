@@ -13,14 +13,22 @@ struct PromptBuilder {
         styleProfile: StyleProfile?,
         conversationHistory: [ChatMessage],
         restrictedTopics: Set<String>,
-        alwaysRespond: Bool = false
+        alwaysRespond: Bool = false,
+        fewShotExamples: [(incoming: String, generated: String, confidence: Double)] = []
     ) -> BuiltPrompt {
         // --- System instruction (goes into Gemini's system_instruction field) ---
         var systemParts: [String] = []
         systemParts.append(buildSystemSection(restrictedTopics: restrictedTopics, alwaysRespond: alwaysRespond))
 
+        // Message type-specific guidance
+        systemParts.append(buildMessageTypeGuidance(for: message))
+
         if let style = styleProfile {
             systemParts.append(buildStyleSection(style: style, contactName: message.displayName))
+        }
+
+        if !fewShotExamples.isEmpty {
+            systemParts.append(buildFewShotSection(examples: fewShotExamples, contactName: message.displayName))
         }
 
         if !ragResults.isEmpty {
@@ -128,12 +136,18 @@ struct PromptBuilder {
             """
         } else {
             text += """
-            - If you're not sure how Matthew would respond, start your response with CONFIDENCE:LOW
+            - Before your message, output a confidence line in this exact format: CONF:0.85
+              Where the number is 0.0-1.0 indicating how confident you are this sounds like Matthew.
+              0.9+ = very confident, sounds exactly like Matthew
+              0.7-0.9 = confident, good match
+              0.5-0.7 = uncertain, might sound off
+              Below 0.5 = very unsure, risky to send
+              Then write your message on the next line.
+            - If the conversation is serious, emotional, or about sensitive topics, lower your confidence score.
             - Never reveal you are an AI. Never say "as an AI" or anything similar.
-            - If the conversation gets serious, emotional, or you're unsure, respond with CONFIDENCE:LOW
             - If sending multiple short messages instead of one long one, separate them with |||
             - Follow the capitalization, punctuation, and formatting patterns from the style profile below. If no style profile is provided, default to lowercase casual texting.
-            - Do NOT include any prefix like "Matthew:" in your response. Just write the message text directly.
+            - Do NOT include any prefix like "Matthew:" in your response. Just the CONF line then the message.
             """
         }
 
@@ -141,7 +155,7 @@ struct PromptBuilder {
             if alwaysRespond {
                 text += "\n- Avoid these topics if possible, but still respond with something: \(restrictedTopics.joined(separator: ", "))"
             } else {
-                text += "\n- NEVER respond about these topics (respond with CONFIDENCE:LOW instead): \(restrictedTopics.joined(separator: ", "))"
+                text += "\n- For these restricted topics, set your confidence below 0.3: \(restrictedTopics.joined(separator: ", "))"
             }
         }
 
@@ -155,16 +169,97 @@ struct PromptBuilder {
         """
     }
 
-    private static func buildRAGSection(chunks: [RAGChunk]) -> String {
-        var text = "[SIMILAR PAST CONVERSATIONS — use these as reference for how Matthew texts]\n"
+    // MARK: - Message Type Detection
 
-        for chunk in chunks {
-            text += "---\n"
+    private enum MessageType {
+        case greeting, question, emojiOnly, emotional, shortCasual, linkOrMedia, normal
+    }
+
+    private static func classifyMessage(_ message: ChatMessage) -> MessageType {
+        let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        // Emoji-only: all characters are emoji/whitespace
+        let strippedEmoji = text.unicodeScalars.filter { !$0.properties.isEmoji && !$0.properties.isEmojiPresentation && !CharacterSet.whitespaces.contains($0) }
+        if strippedEmoji.isEmpty && !text.isEmpty { return .emojiOnly }
+
+        // Link/media
+        if text.contains("http://") || text.contains("https://") || message.hasAttachment { return .linkOrMedia }
+
+        // Greeting
+        let greetings = ["hey", "hi", "hello", "yo", "sup", "what's up", "whats up", "wassup", "wsg", "heyy", "heyyy"]
+        if greetings.contains(where: { text.hasPrefix($0) }) && text.count < 25 { return .greeting }
+
+        // Question
+        if text.contains("?") { return .question }
+
+        // Emotional/serious
+        let emotionalWords = ["worried", "miss you", "rough day", "stressed", "depressed", "sad", "crying", "hurt", "sorry", "love you", "passed away", "died", "funeral", "hospital", "emergency"]
+        if emotionalWords.contains(where: { text.contains($0) }) { return .emotional }
+
+        // Short casual
+        if text.count < 15 { return .shortCasual }
+
+        return .normal
+    }
+
+    private static func buildMessageTypeGuidance(for message: ChatMessage) -> String {
+        switch classifyMessage(message) {
+        case .greeting:
+            return "[CONTEXT: This is a greeting. Match Matthew's typical greeting style — keep it casual and brief.]"
+        case .question:
+            return "[CONTEXT: They asked a question. Answer directly and stay on topic. Match Matthew's typical response length for questions.]"
+        case .emojiOnly:
+            return "[CONTEXT: They sent just emoji. Respond with a very short reaction — emoji, a few words, or a brief acknowledgment. Don't over-respond.]"
+        case .emotional:
+            return "[CONTEXT: This seems emotional or serious. Be genuine and empathetic but still sound like Matthew. Don't be overly formal or therapeutic.]"
+        case .shortCasual:
+            return "[CONTEXT: Short casual message. Match their energy — keep your reply similarly brief.]"
+        case .linkOrMedia:
+            return "[CONTEXT: They shared a link or media. React naturally — acknowledge it, comment on it, or ask about it.]"
+        case .normal:
+            return ""
+        }
+    }
+
+    private static func buildFewShotSection(examples: [(incoming: String, generated: String, confidence: Double)], contactName: String) -> String {
+        var text = "[EXAMPLES OF MATTHEW'S PAST REPLIES TO \(contactName.uppercased())]\n"
+        text += "These are real replies Matthew sent that matched his style well. Use them as tone/style reference.\n\n"
+        for example in examples {
+            text += "They said: \"\(example.incoming)\"\n"
+            text += "Matthew replied: \"\(example.generated)\"\n\n"
+        }
+        return text
+    }
+
+    private static func buildRAGSection(chunks: [RAGChunk]) -> String {
+        var text = """
+        [SIMILAR PAST CONVERSATIONS]
+        These are past conversations with this contact, ranked by relevance.
+        Use them as reference for tone, vocabulary, and how Matthew handles similar topics.
+        More recent and higher-relevance conversations are more reliable references.
+
+        """
+
+        for (i, chunk) in chunks.enumerated() {
+            let dateStr = relativeDate(chunk.timestamp)
+            let similarity = chunk.distance.map { String(format: "%.0f%%", (1 - $0) * 100) } ?? "?"
+            let topicStr = chunk.topics.isEmpty ? "" : " | Topics: \(chunk.topics.joined(separator: ", "))"
+            text += "--- Conversation \(i + 1) (relevance: \(similarity), \(dateStr)\(topicStr)) ---\n"
             text += chunk.chunkText
             text += "\n"
         }
         text += "---"
 
         return text
+    }
+
+    private static func relativeDate(_ date: Date) -> String {
+        let days = Int(-date.timeIntervalSinceNow / 86400)
+        if days == 0 { return "today" }
+        if days == 1 { return "yesterday" }
+        if days < 7 { return "\(days) days ago" }
+        if days < 30 { return "\(days / 7) weeks ago" }
+        if days < 365 { return "\(days / 30) months ago" }
+        return "\(days / 365) years ago"
     }
 }

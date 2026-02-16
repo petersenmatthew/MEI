@@ -55,9 +55,14 @@ final class RAGDatabase: @unchecked Sendable {
         }
     }
 
-    /// Search for similar chunks using brute-force cosine similarity.
-    /// For MVP without sqlite-vss, this scans all chunks for the given contact.
-    func searchSimilar(embedding: [Float], contact: String, limit: Int = 8) throws -> [RAGChunk] {
+    /// Search for similar chunks using brute-force cosine similarity with
+    /// recency weighting and minimum similarity filtering.
+    func searchSimilar(
+        embedding: [Float],
+        contact: String,
+        limit: Int = 8,
+        minSimilarity: Float = 0.4
+    ) throws -> [RAGChunk] {
         guard let db = db else { throw RAGDatabaseError.notOpen }
 
         let query = """
@@ -74,7 +79,9 @@ final class RAGDatabase: @unchecked Sendable {
 
         sqlite3_bind_text(stmt, 1, (contact as NSString).utf8String, -1, nil)
 
-        var results: [(chunk: RAGChunk, similarity: Float)] = []
+        let now = Date()
+        let isoFormatter = ISO8601DateFormatter()
+        var results: [(chunk: RAGChunk, score: Float)] = []
 
         while sqlite3_step(stmt) == SQLITE_ROW {
             let id = columnText(stmt, 0) ?? ""
@@ -98,8 +105,16 @@ final class RAGDatabase: @unchecked Sendable {
 
             let similarity = cosineSimilarity(embedding, chunkEmbedding)
 
+            // Filter out chunks below minimum similarity threshold
+            guard similarity >= minSimilarity else { continue }
+
             let topics = (try? JSONDecoder().decode([String].self, from: topicsJSON.data(using: .utf8) ?? Data())) ?? []
-            let timestamp = ISO8601DateFormatter().date(from: timestampStr) ?? Date()
+            let timestamp = isoFormatter.date(from: timestampStr) ?? Date()
+
+            // Apply recency weighting: recent chunks get a boost, old ones decay gently
+            let ageInDays = Float(max(1, now.timeIntervalSince(timestamp) / 86400))
+            let recencyBoost: Float = 1.0 / (1.0 + log(ageInDays / 7.0))
+            let adjustedScore = similarity * 0.7 + similarity * recencyBoost * 0.3
 
             let chunk = RAGChunk(
                 id: id,
@@ -113,12 +128,12 @@ final class RAGDatabase: @unchecked Sendable {
                 distance: 1 - similarity
             )
 
-            results.append((chunk, similarity))
+            results.append((chunk, adjustedScore))
         }
 
-        // Sort by similarity descending, take top N
+        // Sort by recency-weighted score descending, take top N
         return results
-            .sorted { $0.similarity > $1.similarity }
+            .sorted { $0.score > $1.score }
             .prefix(limit)
             .map(\.chunk)
     }
@@ -177,17 +192,12 @@ final class RAGDatabase: @unchecked Sendable {
 
     private func cosineSimilarity(_ a: [Float], _ b: [Float]) -> Float {
         guard a.count == b.count else { return 0 }
-
         var dot: Float = 0
         var normA: Float = 0
         var normB: Float = 0
-
-        for i in 0..<a.count {
-            dot += a[i] * b[i]
-            normA += a[i] * a[i]
-            normB += b[i] * b[i]
-        }
-
+        vDSP_dotpr(a, 1, b, 1, &dot, vDSP_Length(a.count))
+        vDSP_dotpr(a, 1, a, 1, &normA, vDSP_Length(a.count))
+        vDSP_dotpr(b, 1, b, 1, &normB, vDSP_Length(b.count))
         let denom = sqrt(normA) * sqrt(normB)
         return denom > 0 ? dot / denom : 0
     }
